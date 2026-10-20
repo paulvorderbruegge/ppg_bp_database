@@ -89,7 +89,6 @@ def build_bp(raw_dir: Path) -> pd.DataFrame:
     return bp.sort_values(["record_id", "time_s"]).reset_index(drop=True)
 
 def write_waves(raw_dir: Path, out_dir: Path) -> None:
-    """Write one HDF5 file per record containing only the PPG channels (float32)."""
     info = _read_info(raw_dir) 
     # info = pd.read_csv(raw_dir / SUBJECTS_INFO)
     records = build_records(raw_dir)
