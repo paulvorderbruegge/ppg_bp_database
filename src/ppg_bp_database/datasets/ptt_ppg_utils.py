@@ -1,31 +1,18 @@
-"""PTT-PPG dataset (PhysioNet, v1.1.0): download and conversion to the shared format."""
+"""PTT-PPG dataset (PhysioNet, v1.1.0): Conversion to the shared format."""
 from pathlib import Path
 
 import pandas as pd
 import wfdb
-import h5py
+
+from ppg_bp_database.utils import normalize_sex, mean_arterial_pressure, write_wave
 
 DATASET = "pttppg"
-BASE_URL = "https://physionet.org/files/pulse-transit-time-ppg/1.1.0/csv/"
 SUBJECTS_INFO = "csv/subjects_info.csv"
 
-#-----------------------------------------------------------------------------------------
-# TEMPORARY: only use subjects 1..MAX_SUBJECT while the download is incomplete (None = all)
-MAX_SUBJECT = 5
-
-def _read_info(raw_dir: Path) -> pd.DataFrame:
-    """Read subjects_info.csv, optionally restricted to the first MAX_SUBJECT subjects."""
-    info = pd.read_csv(raw_dir / SUBJECTS_INFO)
-    if MAX_SUBJECT is not None:
-        subject_nr = info["record"].str.extract(r"^s(\d+)_")[0].astype(int)
-        info = info[subject_nr <= MAX_SUBJECT]
-    return info.reset_index(drop=True)
-#-----------------------------------------------------------------------------------------
 
 def build_subjects(raw_dir: Path) -> pd.DataFrame:
-    #info = pd.read_csv(raw_dir / SUBJECTS_INFO)
-    info = _read_info(raw_dir)
-    
+    info = pd.read_csv(raw_dir / SUBJECTS_INFO)
+
     # One row per subject: use the "walk" record (demographics are the same in all three)
     info = info[info["record"].str.endswith("_walk")].copy()
 
@@ -33,41 +20,43 @@ def build_subjects(raw_dir: Path) -> pd.DataFrame:
         "subject_id": DATASET + "_" + info["record"].str.replace("_walk", "", regex=False),
         "dataset": DATASET,
         "age": info["age"],
-        "sex": info["gender"],
+        "sex": normalize_sex(info["gender"]),
         "height_cm": info["height"],
         "weight_kg": info["weight"],
     })
     return subjects.reset_index(drop=True)
-    
+
+
 def _filter_ppg_channels(h) -> list[str]:
-    return [s for s in h.sig_name if s.startswith("pleth")]    
+    return [s for s in h.sig_name if s.startswith("pleth")]
+
 
 def build_records(raw_dir: Path) -> pd.DataFrame:
-    # info = pd.read_csv(raw_dir / SUBJECTS_INFO)
-    info = _read_info(raw_dir)
+    info = pd.read_csv(raw_dir / SUBJECTS_INFO)
 
     # Read the headers to get length, sampling rate and channel names
     headers = [wfdb.rdheader(str(raw_dir / name)) for name in info["record"]]
+    signals = [_filter_ppg_channels(h) for h in headers]                      # CHANGED
 
     records = pd.DataFrame({
         "record_id": DATASET + "_" + info["record"],
         "subject_id": DATASET + "_" + info["record"].str.split("_").str[0],
         "dataset": DATASET,
         "condition": info["activity"],
-        "duration_s": [h.sig_len / h.fs for h in headers], # type: ignore
-        "sampling_rate_hz": [h.fs for h in headers],
-        "signals": [_filter_ppg_channels(h) for h in headers],
+        "duration_s": [h.sig_len / h.fs for h in headers],  # type: ignore
+        "signals": signals,
+        "sampling_rates_hz": [[h.fs] * len(s) for h, s in zip(headers, signals)],
         "wave_path": "waves/" + DATASET + "_" + info["record"] + ".h5",
     })
     return records.reset_index(drop=True)
 
-def build_bp(raw_dir: Path) -> pd.DataFrame:
-    # info = pd.read_csv(raw_dir / SUBJECTS_INFO)
-    info = _read_info(raw_dir)
+
+def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
+    info = pd.read_csv(raw_dir / SUBJECTS_INFO)
     record_id = DATASET + "_" + info["record"]
 
     # Duration of each record, needed as the time of the "end" measurement
-    durations = build_records(raw_dir).set_index("record_id")["duration_s"]
+    durations = records.set_index("record_id")["duration_s"]
 
     start = pd.DataFrame({
         "record_id": record_id,
@@ -83,59 +72,30 @@ def build_bp(raw_dir: Path) -> pd.DataFrame:
     })
 
     bp = pd.concat([start, end], ignore_index=True)
-    bp["map"] = bp["dbp"] + (bp["sbp"] - bp["dbp"]) / 3
+    bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
     bp["method"] = "cuff"
 
     return bp.sort_values(["record_id", "time_s"]).reset_index(drop=True)
 
-def write_waves(raw_dir: Path, out_dir: Path) -> None:
-    info = _read_info(raw_dir) 
-    # info = pd.read_csv(raw_dir / SUBJECTS_INFO)
-    records = build_records(raw_dir)
 
-    (out_dir / "waves").mkdir(parents=True, exist_ok=True)
+def write_waves(raw_dir: Path, out_dir: Path, records: pd.DataFrame) -> None:
+    for row in records.itertuples():
+        name = row.record_id.removeprefix(DATASET + "_") # type: ignore
+        rec = wfdb.rdrecord(str(raw_dir / name), channel_names=list(row.signals)) # type: ignore
 
-    for name, signals, wave_path in zip(info["record"], records["signals"], records["wave_path"]):
-        print(name)
-        rec = wfdb.rdrecord(str(raw_dir / name), channel_names=signals)
+        signals = {ch: (rec.p_signal[:, i], rec.fs, rec.units[i], 0.0)  # type: ignore
+                   for i, ch in enumerate(rec.sig_name)}                 # type: ignore
+        write_wave(out_dir / row.wave_path, signals) # type: ignore
 
-        with h5py.File(out_dir / wave_path, "w") as f:
-            f.attrs["fs"] = rec.fs
-            for i, channel in enumerate(rec.sig_name): # type: ignore
-                ds = f.create_dataset(
-                    channel,
-                    data=rec.p_signal[:, i].astype("float32"), # type: ignore
-                    compression="gzip",
-                    chunks=True,
-                )
-                ds.attrs["unit"] = rec.units[i] # type: ignore
-
-def _debug():
-    raw = Path("data/raw/pttppg")
-
-    for hea in sorted(raw.glob("*.hea")):
-        name = hea.stem
-        h = wfdb.rdheader(str(raw / name))
-        dat = raw / f"{name}.dat"
-        expected = h.sig_len * h.n_sig * 1.5 if h.fmt[0] == "212" else None
-        actual = dat.stat().st_size if dat.exists() else None
-        ok = expected is not None and actual == expected
-        print(f"{name:10} fmt={h.fmt[0]} expected={expected} actual={actual} {'OK' if ok else '<-- CHECK'}")
 
 def convert(raw_dir: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    subjects = build_subjects(raw_dir)
-    subjects.to_parquet(out_dir / "subjects.parquet", index=False)
+    build_subjects(raw_dir).to_parquet(out_dir / "subjects.parquet", index=False)
 
     records = build_records(raw_dir)
     records.to_parquet(out_dir / "records.parquet", index=False)
 
-    bp = build_bp(raw_dir)
-    bp.to_parquet(out_dir / "bp.parquet", index=False)
+    build_bp(raw_dir, records).to_parquet(out_dir / "bp.parquet", index=False)
 
-    _debug()
-
-    write_waves(raw_dir, out_dir)
-
-    # TODO: wave files (one parquet per record)
+    write_waves(raw_dir, out_dir, records)
