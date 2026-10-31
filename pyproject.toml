@@ -1,7 +1,7 @@
 [project]
 name = "ppg-bp-database"
 version = "0.1.0"
-description = "Add your description here"
+description = "Converts several PPG / blood-pressure datasets into one shared format (parquet tables + HDF5 waves) and loads them for notebooks."
 readme = "README.md"
 authors = [
     { name = "paulv", email = "paulvorderbruegge@proton.me" }
@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "h5py>=3.16.0",
+    "mat73>=0.65",
+    "numpy>=2.5.4",
     "openpyxl>=3.1.5",
     "pandas>=3.0.6",
     "pyarrow>=26.0.0",
@@ -21,3 +23,9 @@ ppg-bp-database = "ppg_bp_database:main"
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "matplotlib>=3.11.2",
+]

@@ -1,12 +1,18 @@
-"""PPG-BP dataset (Liang et al. 2018): Conversion to the shared format."""
+"""PPG-BP dataset (Liang et al. 2018, figshare): conversion to the shared format.
+
+Raw:     data/raw/ppgbp/PPG-BP Database/Data File/{PPG-BP dataset.xlsx, 0_subject/<subject>_<segment>.txt}
+Records: one per 2.1 s PPG segment (3 per subject), 1000 Hz
+BP:      one cuff reading per subject, copied to each of its records
+"""
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, write_wave
+from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, save_tables, write_wave
 
 DATASET = "ppgbp"
+SYNTHETIC = False  # measured data
 SAMPLE_RATE_HZ = 1000.0  # 2100 samples per segment
 EXCEL_FILE = "PPG-BP Database/Data File/PPG-BP dataset.xlsx"
 WAVE_DIR = "PPG-BP Database/Data File/0_subject"
@@ -27,12 +33,16 @@ COLUMNS = {
     "cerebral infarction": "cerebral_infarction",
     "cerebrovascular disease": "cerebrovascular_disease",
 }
+EXTRA_SUBJECT_COLUMNS = ["heart_rate_bpm", "bmi_kg_m2", "hypertension_stage", "diabetes",
+                         "cerebral_infarction", "cerebrovascular_disease"]
 
 
 def _read_info(raw_dir: Path) -> pd.DataFrame:
     """Read the subject table (one row per subject)."""
     info = pd.read_excel(raw_dir / EXCEL_FILE, header=1)  # first row is a title
     info.columns = info.columns.str.strip()
+    missing = set(COLUMNS) - set(info.columns)
+    assert not missing, f"columns not found in the Excel file: {missing}"
     info = info.rename(columns=COLUMNS)
     info["subject_id"] = DATASET + "_" + info["subject"].astype(int).astype(str)
     return info
@@ -40,20 +50,10 @@ def _read_info(raw_dir: Path) -> pd.DataFrame:
 
 def build_subjects(raw_dir: Path) -> pd.DataFrame:
     info = _read_info(raw_dir)
-    return pd.DataFrame({
-        "subject_id": info["subject_id"],
-        "dataset": DATASET,
-        "age": info["age"],
-        "sex": normalize_sex(info["sex"]),
-        "height_cm": info["height_cm"],
-        "weight_kg": info["weight_kg"],
-        "heart_rate_bpm": info["heart_rate_bpm"],
-        "bmi_kg_m2": info["bmi_kg_m2"],
-        "hypertension_stage": info["hypertension_stage"],
-        "diabetes": info["diabetes"],
-        "cerebral_infarction": info["cerebral_infarction"],
-        "cerebrovascular_disease": info["cerebrovascular_disease"],
-    })
+    subjects = info[["subject_id", "age", "height_cm", "weight_kg", *EXTRA_SUBJECT_COLUMNS]].copy()
+    subjects["dataset"] = DATASET
+    subjects["sex"] = normalize_sex(info["sex"])
+    return subjects
 
 
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
@@ -77,6 +77,7 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
             "sampling_rates_hz": [SAMPLE_RATE_HZ],
             "wave_path": wave_path,
         })
+    assert rows, f"no PPG-BP .txt files found in {raw_dir / WAVE_DIR}"
     return pd.DataFrame(rows)
 
 
@@ -88,15 +89,10 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
     bp["time_s"] = 0.0  # the paper: BP was measured at the start
     bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
     bp["method"] = "cuff"
-    return bp[["record_id", "time_s", "sbp", "dbp", "map", "method"]]
+    return bp.drop(columns="subject_id")
 
 
 def convert(raw_dir: Path, out_dir: Path) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    build_subjects(raw_dir).to_parquet(out_dir / "subjects.parquet", index=False)
-
+    prepare_out_dir(out_dir)
     records = write_records(raw_dir, out_dir)
-    records.to_parquet(out_dir / "records.parquet", index=False)
-
-    build_bp(raw_dir, records).to_parquet(out_dir / "bp.parquet", index=False)
+    save_tables(out_dir, build_subjects(raw_dir), records, build_bp(raw_dir, records), synthetic=SYNTHETIC)

@@ -2,6 +2,7 @@
 # Download PulseDB v2_0 Segment_Files (MIMIC + Vital) from Box, verify, unpack.
 # Fedora: sudo dnf install 7zip   (older releases: p7zip p7zip-plugins). curl, awk, sha1sum are preinstalled.
 set -euo pipefail
+cd "$(dirname "$0")/.."  # project root, so it works from any folder
 mkdir -p data/raw/pulsedb/Segment_Files && cd data/raw/pulsedb/Segment_Files
 
 # -C - resumes: just rerun the script if a download breaks

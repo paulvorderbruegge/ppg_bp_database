@@ -1,7 +1,13 @@
-"""PulseDB dataset (Wang et al. 2023, v2_0, MIMIC-III + VitalDB): Conversion to the shared format.
-Notable: One record = one consecutive clip of one .mat file (NOT one 10 s segment: that would be ~5 million HDF5 files).
+"""PulseDB dataset (Wang et al. 2023, v2_0, MIMIC-III + VitalDB): conversion to the shared format.
+
+Raw:     data/raw/pulsedb/**/{PulseDB_MIMIC,PulseDB_Vital}/<subject>.mat (download: scripts/download_pulsedb.sh)
+Records: one per consecutive clip of one .mat file (NOT one per 10 s segment: that would be ~5 million HDF5 files).
          The 10 s segments that PulseDB removed for bad quality leave gaps inside a clip; they are filled with NaN, so
          the time axis (t0 + i / fs) stays valid and equals PulseDB's own clip time `T`.
+BP:      none yet (TODO: single SBP/DBP values derived from the abp wave)
+
+Unlike the other datasets, subjects and records are built in one pass (`convert_file`), because the demographics are
+stored inside the large .mat files and reading them twice would double the conversion time.
 """
 from pathlib import Path
 from typing import Iterator
@@ -10,9 +16,10 @@ import numpy as np
 import pandas as pd
 from mat73 import loadmat
 
-from ppg_bp_database.utils import normalize_sex, write_wave
+from ppg_bp_database.utils import normalize_sex, prepare_out_dir, save_tables, write_wave
 
 DATASET = "pulsedb"
+SYNTHETIC = False  # measured data
 SAMPLE_RATE_HZ = 125.0
 SEGMENT_SAMPLES = 1250  # 10 s at 125 Hz
 SEGMENT_S = SEGMENT_SAMPLES / SAMPLE_RATE_HZ
@@ -132,8 +139,13 @@ def _mat_files(raw_dir: Path) -> Iterator[tuple[Path, str, str]]:
                     yield path, source, condition
 
 
+def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame | None:
+    """TODO: derive single SBP/DBP/MAP values from the abp wave."""
+    return None
+
+
 def convert(raw_dir: Path, out_dir: Path) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    prepare_out_dir(out_dir)
 
     files = list(_mat_files(raw_dir))
     assert files, f"no PulseDB .mat files found below {raw_dir}"
@@ -146,7 +158,5 @@ def convert(raw_dir: Path, out_dir: Path) -> None:
         if i % 100 == 0:
             print(f"{i}/{len(files)} files converted")
 
-    pd.DataFrame(subjects).to_parquet(out_dir / "subjects.parquet", index=False)
-    pd.DataFrame(records).to_parquet(out_dir / "records.parquet", index=False)
-
-    # TODO: derive BP values (beat-wise SBP/DBP/MAP) from the abp wave and write bp.parquet
+    records = pd.DataFrame(records)
+    save_tables(out_dir, pd.DataFrame(subjects), records, build_bp(raw_dir, records), synthetic=SYNTHETIC)

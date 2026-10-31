@@ -1,5 +1,5 @@
-"""Run once on one downloaded PulseDB file to check the field names assumed in pulsedb_utils.py.
-Usage: python scripts/inspect_pulsedb.py data/raw/pulsedb/Segment_Files/PulseDB_MIMIC/<some file>.mat"""
+"""Run once on one downloaded PulseDB file to check the field names assumed in src/ppg_bp_database/datasets/pulsedb.py.
+Usage: uv run python scripts/inspect_pulsedb.py data/raw/pulsedb/Segment_Files/PulseDB_MIMIC/<some file>.mat"""
 import sys
 
 import numpy as np
