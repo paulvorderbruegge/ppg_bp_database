@@ -9,11 +9,14 @@ Every dataset is written to ``data/structured/<dataset>/``:
 """
 import os
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 import h5py
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Paths. The data folder can be moved by setting the environment variable PPG_BP_DATA_DIR.
@@ -53,8 +56,10 @@ BP_COLUMNS = {
     "sbp": "float64",         # mmHg
     "dbp": "float64",
     "map": "float64",
-    "method": "string",       # "cuff", "derived_from_abp", ...
+    "method": "string",       # what measured the pressure: "cuff", "abp" (arterial line wave), "finapres"
+    "source": "string",       # "dataset" = value given by the dataset, "calculated" = calculated by us from a wave
 }
+BP_SOURCES = {"dataset", "calculated"}
 
 
 def normalize_sex(values: pd.Series) -> pd.Series:
@@ -89,10 +94,11 @@ def prepare_out_dir(out_dir: Path) -> None:
         shutil.rmtree(out_dir / "waves")
 
 
-def save_tables(out_dir: Path, subjects: pd.DataFrame, records: pd.DataFrame, bp: pd.DataFrame | None, *,
-                synthetic: bool) -> None:
+def save_tables(out_dir: Path, subjects: pd.DataFrame, records: pd.DataFrame,
+                bp: pd.DataFrame | Iterable[pd.DataFrame] | None, *, synthetic: bool) -> None:
     """Check the three tables against the shared schema and write them as parquet files.
-    Pass bp=None if the dataset has no BP values (yet); an old bp.parquet is then removed.
+    bp: one DataFrame, or an iterable of DataFrame chunks for tables too large for memory (written chunk by chunk,
+    not sorted). Pass bp=None if the dataset has no BP values (yet); an old bp.parquet is then removed.
     synthetic: whether the dataset is simulated (written to the `synthetic` column of subjects and records)."""
     subjects = subjects.assign(synthetic=synthetic)
     records = records.assign(synthetic=synthetic)
@@ -111,16 +117,38 @@ def save_tables(out_dir: Path, subjects: pd.DataFrame, records: pd.DataFrame, bp
     records.to_parquet(out_dir / "records.parquet", index=False)
 
     bp_path = out_dir / "bp.parquet"
-    if bp is None:
-        bp_path.unlink(missing_ok=True)
-    else:
-        bp = _conform(bp, BP_COLUMNS, "bp", extra_allowed=False)
-        unknown = set(bp["record_id"]) - set(records["record_id"])
-        assert not unknown, f"bp refers to unknown records: {sorted(unknown)[:5]}"
-        bp.sort_values(["record_id", "time_s"]).to_parquet(bp_path, index=False)
+    bp_path.unlink(missing_ok=True)
+    n_bp = None
+    if isinstance(bp, pd.DataFrame):
+        bp = _check_bp(bp, set(records["record_id"]))
+        bp.sort_values(["record_id", "source", "time_s"]).to_parquet(bp_path, index=False)
+        n_bp = len(bp)
+    elif bp is not None:
+        n_bp = _write_bp_chunks(bp_path, bp, set(records["record_id"]))
 
     print(f"{out_dir.name}{' (synthetic)' if synthetic else ''}: {len(subjects)} subjects, {len(records)} records, "
-          f"{'no' if bp is None else len(bp)} BP values -> {out_dir}")
+          f"{'no' if n_bp is None else n_bp} BP values -> {out_dir}")
+
+
+def _check_bp(bp: pd.DataFrame, record_ids: set[str]) -> pd.DataFrame:
+    bp = _conform(bp, BP_COLUMNS, "bp", extra_allowed=False)
+    unknown = set(bp["record_id"]) - record_ids
+    assert not unknown, f"bp refers to unknown records: {sorted(unknown)[:5]}"
+    bad = set(bp["source"].fillna("<NA>")) - BP_SOURCES
+    assert not bad, f"bp: invalid source values {bad}, allowed: {BP_SOURCES}"
+    return bp
+
+
+def _write_bp_chunks(path: Path, chunks: Iterable[pd.DataFrame], record_ids: set[str]) -> int:
+    """Write bp chunk by chunk, so the whole table never has to be in memory. Returns the number of rows."""
+    schema = pa.Schema.from_pandas(_check_bp(pd.DataFrame(columns=list(BP_COLUMNS)), record_ids), preserve_index=False)
+    n = 0
+    with pq.ParquetWriter(path, schema) as writer:
+        for chunk in chunks:
+            chunk = _check_bp(chunk, record_ids)
+            writer.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False))
+            n += len(chunk)
+    return n
 
 
 # ---------------------------------------------------------------------------------------------------------------------

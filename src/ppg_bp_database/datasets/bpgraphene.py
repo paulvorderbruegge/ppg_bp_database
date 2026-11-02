@@ -3,12 +3,13 @@
 Raw:     data/raw/bpgraphene/**/subject<N>_day<D>/setup<NN>_<condition>/data_trial<TT>_<signal>.csv
          (found wherever the PhysioNet zip was unpacked below data/raw/bpgraphene)
 Records: one per trial; signals ppg, finapres_ppg, finapres_bp (bioimpedance is deliberately skipped)
-BP:      none yet (TODO: single SBP/DBP values derived from the finapres_bp wave)
+BP:      one value per beat, calculated from the finapres_bp wave (ppg_bp_database.beats), source "calculated"
 """
 from pathlib import Path
 
 import pandas as pd
 
+from ppg_bp_database.beats import bp_from_wave
 from ppg_bp_database.utils import prepare_out_dir, save_tables, write_wave
 
 DATASET = "bpgraphene"
@@ -52,6 +53,13 @@ def build_subjects(raw_dir: Path) -> pd.DataFrame:
     return pd.DataFrame({"subject_id": [f"{DATASET}_s{n}" for n in numbers], "dataset": DATASET})
 
 
+def _record_id(bp_file: Path) -> str:
+    subject, day = _subject_day(bp_file)
+    setup = bp_file.parent.name.split("_")[0]                     # "setup02"
+    trial = bp_file.stem.split("_")[1].removeprefix("trial")      # "01"
+    return f"{DATASET}_s{subject}_day{day}_{setup}_trial{trial}"
+
+
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Convert every trial to one HDF5 file and return the records table."""
     rows = []
@@ -60,7 +68,7 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
         setup = bp_file.parent.name                                   # "setup02_hgcp"
         trial = bp_file.stem.split("_")[1].removeprefix("trial")      # "01"
 
-        record_id = f"{DATASET}_s{subject}_day{day}_{setup.split('_')[0]}_trial{trial}"
+        record_id = _record_id(bp_file)
         wave_path = f"waves/{record_id}.h5"
 
         signals = {}
@@ -83,9 +91,14 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame | None:
-    """TODO: derive single SBP/DBP/MAP values from the finapres_bp wave."""
-    return None
+def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
+    """One value per beat of the finapres_bp wave (the dataset gives no single BP values)."""
+    _, fs, _ = SIGNALS["finapresBP"]
+    parts = []
+    for bp_file in _trial_files(raw_dir):
+        values, t0 = _read_signal(bp_file, fs)
+        parts.append(bp_from_wave(_record_id(bp_file), values.to_numpy(), fs, t0, "finapres"))
+    return pd.concat(parts, ignore_index=True)
 
 
 def convert(raw_dir: Path, out_dir: Path) -> None:

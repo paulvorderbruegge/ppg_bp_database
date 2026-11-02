@@ -89,6 +89,7 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
     bp["time_s"] = 0.0  # the paper: BP was measured at the start
     bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
     bp["method"] = "cuff"
+    bp["source"] = "dataset"
     return bp.drop(columns="subject_id")
 
 

@@ -1119,6 +1119,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "scipy" },
     { name = "wfdb" },
 ]
 
@@ -1136,6 +1137,7 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "pyarrow", specifier = ">=26.0.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
     { name = "wfdb", specifier = ">=4.3.1" },
 ]
 

@@ -2,14 +2,16 @@
 
 Raw:     data/raw/mimicbp/**/<source_id>_{ppg,abp,labels}.npy (found wherever the zips were unpacked)
 Records: one per 30 s segment (30 per subject), ppg + abp at 125 Hz
-BP:      median SBP/DBP per segment as provided by the dataset (derived from the ABP)
-         TODO: later many single values per record, derived from the abp wave; the labels can validate them
+BP:      source "dataset":    median SBP/DBP per segment as provided by the dataset (derived from the abp), time_s NaN
+         source "calculated": one value per beat, calculated from the abp wave (ppg_bp_database.beats);
+                              the dataset's medians can be used to validate them
 """
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from ppg_bp_database.beats import bp_from_wave
 from ppg_bp_database.utils import mean_arterial_pressure, prepare_out_dir, save_tables, write_wave
 
 DATASET = "mimicbp"
@@ -75,24 +77,25 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
 
 
 def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
-    """Median SBP/DBP per segment, as provided by the dataset."""
+    """Median SBP/DBP per segment as provided by the dataset, plus one calculated value per beat of the abp wave."""
     files = _find_files(raw_dir)
 
-    parts = []
+    given, beats = [], []
     for source_id in _source_ids(files):
+        record_ids = [_record_id(source_id, i + 1) for i in range(N_SEGMENTS)]
         labels = np.load(files[f"{source_id}_labels.npy"])
         assert labels.shape == (N_SEGMENTS, 2), f"{source_id}: labels {labels.shape}, expected (30, 2): SBP, DBP"
-        parts.append(pd.DataFrame({
-            "record_id": [_record_id(source_id, i + 1) for i in range(N_SEGMENTS)],
-            "sbp": labels[:, 0],
-            "dbp": labels[:, 1],
-        }))
+        given.append(pd.DataFrame({"record_id": record_ids, "sbp": labels[:, 0], "dbp": labels[:, 1]}))
 
-    bp = pd.concat(parts, ignore_index=True)
-    bp["time_s"] = np.nan  # median over the whole 30 s segment, not a single point in time
-    bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
-    bp["method"] = "derived_from_abp"
-    return bp
+        abp = np.load(files[f"{source_id}_abp.npy"])
+        beats += [bp_from_wave(rid, abp[i], SAMPLE_RATE_HZ, 0.0, "abp") for i, rid in enumerate(record_ids)]
+
+    given = pd.concat(given, ignore_index=True)
+    given["time_s"] = np.nan  # median over the whole 30 s segment, not a single point in time
+    given["map"] = mean_arterial_pressure(given["sbp"], given["dbp"])
+    given["method"] = "abp"
+    given["source"] = "dataset"
+    return pd.concat([given, *beats], ignore_index=True)
 
 
 def convert(raw_dir: Path, out_dir: Path) -> None:

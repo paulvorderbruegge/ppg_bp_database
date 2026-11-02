@@ -13,6 +13,7 @@ data/structured/<dataset>/     converted data (written by scripts/convert.py)
     waves/<record_id>.h5       one HDF5 file per record, one HDF5 dataset per signal
 src/ppg_bp_database/
     utils.py                   shared schema, paths, save_tables, write_wave / read_wave
+    beats.py                   beat-to-beat SBP / DBP / MAP from a continuous BP wave
     access.py                  loading functions for notebooks
     datasets/<dataset>.py      one converter per dataset, all with the same functions
 scripts/
@@ -30,9 +31,9 @@ notebooks/                     analyses; 01_example_access.ipynb shows the loadi
 |--------------|--------------------------------------------|-----------|-------------------------------|----------------------------|---------------------------|--------|
 | `ppgbp`      | Liang et al. 2018 (figshare)               | no        | 2.1 s segments, 3 per subject | ppg (1000 Hz)              | 1 cuff reading / subject  | raw data not on this machine |
 | `pttppg`     | PhysioNet PTT-PPG v1.1.0                   | no        | sit / walk / run per subject  | ecg, ppg_1..6 (500 Hz)     | cuff at start and end     | raw data not on this machine |
-| `bpgraphene` | PhysioNet graphene bioimpedance v1.0.0     | no        | one per trial                 | ppg, finapres_ppg, finapres_bp | TODO (from finapres_bp) | raw data not on this machine |
-| `mimicbp`    | Sanches et al. 2024 (Harvard Dataverse)    | no        | 30 s segments, 30 per subject | ppg, abp (125 Hz)          | median per segment        | raw data not on this machine |
-| `pulsedb`    | Wang et al. 2023, v2_0                     | no        | one per consecutive clip      | ecg, ppg, abp (125 Hz)     | TODO (from abp)           | raw data not on this machine |
+| `bpgraphene` | PhysioNet graphene bioimpedance v1.0.0     | no        | one per trial                 | ppg, finapres_ppg, finapres_bp | per beat, calculated from finapres_bp | raw data not on this machine |
+| `mimicbp`    | Sanches et al. 2024 (Harvard Dataverse)    | no        | 30 s segments, 30 per subject | ppg, abp (125 Hz)          | median per segment (dataset) + per beat, calculated from abp | raw data not on this machine |
+| `pulsedb`    | Wang et al. 2023, v2_0                     | no        | one per consecutive clip      | ecg, ppg, abp (125 Hz)     | per beat, calculated from abp | raw data not on this machine |
 | `pwdb`       | Charlton et al. 2019, PWDB v0.2.0 (Zenodo 3275625) | **yes** | one simulated beat per virtual subject | abp, ppg, flow_velocity, area at 13 sites each (500 Hz) | brachial SBP/DBP of the simulated wave | converted once (test); raw data not on this machine |
 
 ## Shared schema
@@ -41,7 +42,16 @@ Defined in `src/ppg_bp_database/utils.py` and checked by `save_tables` on every 
 
 - **subjects**: `subject_id, dataset, synthetic, age, sex ("male"/"female"), height_cm, weight_kg`, plus dataset-specific extra columns
 - **records**: `record_id, subject_id, dataset, synthetic, session, condition, duration_s, signals, sampling_rates_hz, wave_path`
-- **bp**: `record_id, time_s, sbp, dbp, map, method`. `time_s` is on the record's time axis; NaN = the value describes the whole record.
+- **bp**: `record_id, time_s, sbp, dbp, map, method, source`. `time_s` is on the record's time axis; NaN = the value
+  describes the whole record. `method` = what measured the pressure (`cuff`, `abp` = arterial line wave, `finapres`).
+  `source` = how we got the value: `dataset` (given by the dataset) or `calculated` (calculated by us from a wave).
+
+Calculated values are one row per heartbeat (`ppg_bp_database.beats`), computed during conversion from the wave at
+its original sampling rate (before any resampling): `time_s` = beat onset, `sbp` = systolic peak, `dbp` = pressure
+at the onset, `map` = mean of the wave over the beat. Only checks that separate beats from non-beats are applied
+(beat length 0.25-2 s, pulse pressure >= 5 mmHg, no NaN gap inside the beat); quality filtering belongs to the
+harmonization step. To compare, e.g., MIMIC-BP's own segment medians with ours:
+`bp.groupby(["record_id", "source"])["sbp"].median().unstack()`.
 
 `synthetic` (bool) is `True` for simulated data / virtual subjects (currently only `pwdb`) and `False` for measured data.
 Every dataset module declares it as `SYNTHETIC` and passes it to `save_tables`. To use only real data:
@@ -52,7 +62,8 @@ IDs are globally unique (`<dataset>_...`), so tables of different datasets can s
 Each HDF5 signal has the attributes `fs` (Hz), `unit` and `t0` (s): sample *i* is at time `t0 + i / fs`.
 Gaps (e.g. removed segments in PulseDB) are NaN.
 
-MAP is approximated as `dbp + (sbp - dbp) / 3`.
+MAP is approximated as `dbp + (sbp - dbp) / 3` for values given by a dataset without MAP; calculated values use the
+exact mean of the wave.
 
 ## Download
 
@@ -107,6 +118,8 @@ The data folder can be moved by setting `PPG_BP_DATA_DIR`.
 
 ## TODO
 
-- Single SBP/DBP values from the ABP / Finapres waves (bpgraphene, pulsedb, later all datasets with an ABP wave)
+- Validate the beat detection on real data (compare with the MIMIC-BP labels; look at Finapres calibration periods)
+- PulseDB also gives its own SBP/DBP per 10 s segment; could be added as `source = dataset` (field names unchecked)
+- `load_bp` loads the whole table; PulseDB has tens of millions of beats, so filtering on load may be needed
 - MIMIC-BP demographics from the MIMIC-III clinical database
 - PulseDB: check the ECG unit

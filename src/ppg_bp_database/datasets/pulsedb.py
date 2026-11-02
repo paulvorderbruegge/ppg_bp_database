@@ -4,7 +4,9 @@ Raw:     data/raw/pulsedb/**/{PulseDB_MIMIC,PulseDB_Vital}/<subject>.mat (downlo
 Records: one per consecutive clip of one .mat file (NOT one per 10 s segment: that would be ~5 million HDF5 files).
          The 10 s segments that PulseDB removed for bad quality leave gaps inside a clip; they are filled with NaN, so
          the time axis (t0 + i / fs) stays valid and equals PulseDB's own clip time `T`.
-BP:      none yet (TODO: single SBP/DBP values derived from the abp wave)
+BP:      one value per beat, calculated from each clip's abp wave (ppg_bp_database.beats), source "calculated".
+         Calculated while the .mat file is loaded and buffered in bp_parts/ (deleted at the end), because the
+         whole table (tens of millions of beats) does not fit in memory as one DataFrame.
 
 Unlike the other datasets, subjects and records are built in one pass (`convert_file`), because the demographics are
 stored inside the large .mat files and reading them twice would double the conversion time.
@@ -12,10 +14,13 @@ stored inside the large .mat files and reading them twice would double the conve
 from pathlib import Path
 from typing import Iterator
 
+import shutil
+
 import numpy as np
 import pandas as pd
 from mat73 import loadmat
 
+from ppg_bp_database.beats import bp_from_wave
 from ppg_bp_database.utils import normalize_sex, prepare_out_dir, save_tables, write_wave
 
 DATASET = "pulsedb"
@@ -75,8 +80,8 @@ def _split_clips(starts: np.ndarray) -> list[np.ndarray]:
 
 
 def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
-                 ) -> tuple[dict, list[dict]]:
-    """Write the HDF5 file(s) of one .mat and return (subject row, record rows)."""
+                 ) -> tuple[dict, list[dict], pd.DataFrame]:
+    """Write the HDF5 file(s) of one .mat and return (subject row, record rows, bp rows per beat)."""
     d = _load(mat_path)
 
     time = _matrix(d[FIELDS["time"]])
@@ -98,7 +103,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
         "weight_kg": float(_first(d[FIELDS["weight"]])),
     }
 
-    records = []
+    records, beats = [], []
     for clip, idx in enumerate(_split_clips(starts), start=1):
         t0 = float(starts[idx[0]])
         offsets = np.rint((starts[idx] - t0) * SAMPLE_RATE_HZ).astype(int)
@@ -115,6 +120,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
         record_id = f"{subject_id}_c{clip:02d}"
         wave_path = f"waves/{record_id}.h5"
         write_wave(out_dir / wave_path, signals)
+        beats.append(bp_from_wave(record_id, signals["abp"][0], SAMPLE_RATE_HZ, t0, "abp"))
 
         records.append({
             "record_id": record_id,
@@ -127,7 +133,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
             "wave_path": wave_path,
         })
 
-    return subject, records
+    return subject, records, pd.concat(beats, ignore_index=True)
 
 
 def _mat_files(raw_dir: Path) -> Iterator[tuple[Path, str, str]]:
@@ -139,24 +145,24 @@ def _mat_files(raw_dir: Path) -> Iterator[tuple[Path, str, str]]:
                     yield path, source, condition
 
 
-def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame | None:
-    """TODO: derive single SBP/DBP/MAP values from the abp wave."""
-    return None
-
-
 def convert(raw_dir: Path, out_dir: Path) -> None:
     prepare_out_dir(out_dir)
+    parts_dir = out_dir / "bp_parts"
+    shutil.rmtree(parts_dir, ignore_errors=True)
+    parts_dir.mkdir()
 
     files = list(_mat_files(raw_dir))
     assert files, f"no PulseDB .mat files found below {raw_dir}"
 
     subjects, records = [], []
     for i, (path, source, condition) in enumerate(files, start=1):
-        subject, recs = convert_file(path, out_dir, source, condition)
+        subject, recs, beats = convert_file(path, out_dir, source, condition)
         subjects.append(subject)
         records.extend(recs)
+        beats.to_parquet(parts_dir / f"{i:05d}.parquet", index=False)
         if i % 100 == 0:
             print(f"{i}/{len(files)} files converted")
 
-    records = pd.DataFrame(records)
-    save_tables(out_dir, pd.DataFrame(subjects), records, build_bp(raw_dir, records), synthetic=SYNTHETIC)
+    bp_chunks = (pd.read_parquet(p) for p in sorted(parts_dir.glob("*.parquet")))
+    save_tables(out_dir, pd.DataFrame(subjects), pd.DataFrame(records), bp_chunks, synthetic=SYNTHETIC)
+    shutil.rmtree(parts_dir)

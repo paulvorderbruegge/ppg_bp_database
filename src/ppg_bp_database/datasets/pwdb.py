@@ -160,7 +160,8 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
         "dbp": haemod["DBP_b [mmHg]"].to_numpy(),
     })
     bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
-    bp["method"] = "derived_from_abp"
+    bp["method"] = "abp"  # simulated wave (see the synthetic column)
+    bp["source"] = "dataset"
     return bp[bp["record_id"].isin(records["record_id"])]
 
 

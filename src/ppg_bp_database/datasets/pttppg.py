@@ -91,6 +91,7 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
     bp = pd.concat([start, end], ignore_index=True)
     bp["map"] = mean_arterial_pressure(bp["sbp"], bp["dbp"])
     bp["method"] = "cuff"
+    bp["source"] = "dataset"
     return bp
 
 
