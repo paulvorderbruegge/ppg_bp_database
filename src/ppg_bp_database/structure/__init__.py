@@ -1,4 +1,7 @@
-"""One module per dataset. Every module has the same layout:
+"""Step 1, structuring: raw data (data/raw/<dataset>) -> shared format (data/structured/<dataset>).
+
+beats.py calculates beat-to-beat BP from continuous pressure waves. Besides that, one module per dataset; every
+dataset module has the same layout:
 
     DATASET                          dataset ID; also the folder name below data/raw and data/structured
     SYNTHETIC                        True if the data is simulated (e.g. pwdb), False if measured
@@ -11,6 +14,6 @@
 """
 from types import ModuleType
 
-from ppg_bp_database.datasets import bpgraphene, mimicbp, ppgbp, pttppg, pulsedb, pwdb
+from ppg_bp_database.structure import bpgraphene, mimicbp, ppgbp, pttppg, pulsedb, pwdb
 
 DATASETS: dict[str, ModuleType] = {m.DATASET: m for m in (ppgbp, pttppg, bpgraphene, mimicbp, pulsedb, pwdb)}

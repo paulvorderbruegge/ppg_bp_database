@@ -82,8 +82,9 @@ def _subject_id(number: int) -> str:
 def _headers(raw_dir: Path) -> dict[int, Path]:
     """Subject number -> path of its WFDB record (without extension), wherever PWs_wfdb.zip was unpacked."""
     files = {int(p.stem.removeprefix("pwdb")): p.with_suffix("") for p in raw_dir.rglob("pwdb[0-9]*.hea")}
-    assert len(files) == N_SUBJECTS, \
-        f"found {len(files)} PWDB .hea files below {raw_dir}, expected {N_SUBJECTS} (PWs_wfdb.zip not unpacked?)"
+    assert files, f"no PWDB .hea files found below {raw_dir} (PWs_wfdb.zip not unpacked?)"
+    if len(files) != N_SUBJECTS:  # e.g. the test sample of scripts/download_sample.py
+        print(f"note: only {len(files)} of {N_SUBJECTS} PWDB subjects found; converting those")
     return dict(sorted(files.items()))
 
 
@@ -97,10 +98,11 @@ def _sex(header: wfdb.Record) -> str:
 def build_subjects(raw_dir: Path) -> pd.DataFrame:
     """One row per virtual subject: age from the model config, sex from the WFDB header (the model is male),
     haemodynamic parameters and the prescribed variations as extra columns."""
-    haemod = _read_csv(raw_dir, HAEMOD_FILE)
+    headers = _headers(raw_dir)
+    haemod = _read_csv(raw_dir, HAEMOD_FILE).loc[list(headers)]  # only subjects whose waves are present
     config = _read_csv(raw_dir, CONFIG_FILE)
     variations = _read_csv(raw_dir, VARIATION_FILE)
-    sex = pd.Series({n: _sex(wfdb.rdheader(str(p))) for n, p in _headers(raw_dir).items()})
+    sex = pd.Series({n: _sex(wfdb.rdheader(str(p))) for n, p in headers.items()})
 
     subjects = pd.DataFrame({
         "subject_id": [_subject_id(n) for n in haemod.index],

@@ -3,13 +3,13 @@
 Raw:     data/raw/bpgraphene/**/subject<N>_day<D>/setup<NN>_<condition>/data_trial<TT>_<signal>.csv
          (found wherever the PhysioNet zip was unpacked below data/raw/bpgraphene)
 Records: one per trial; signals ppg, finapres_ppg, finapres_bp (bioimpedance is deliberately skipped)
-BP:      one value per beat, calculated from the finapres_bp wave (ppg_bp_database.beats), source "calculated"
+BP:      one value per beat, calculated from the finapres_bp wave (structure/beats.py), source "calculated"
 """
 from pathlib import Path
 
 import pandas as pd
 
-from ppg_bp_database.beats import bp_from_wave
+from ppg_bp_database.structure.beats import bp_from_wave
 from ppg_bp_database.utils import prepare_out_dir, save_tables, write_wave
 
 DATASET = "bpgraphene"

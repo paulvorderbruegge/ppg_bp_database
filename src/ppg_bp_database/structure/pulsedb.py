@@ -4,7 +4,7 @@ Raw:     data/raw/pulsedb/**/{PulseDB_MIMIC,PulseDB_Vital}/<subject>.mat (downlo
 Records: one per consecutive clip of one .mat file (NOT one per 10 s segment: that would be ~5 million HDF5 files).
          The 10 s segments that PulseDB removed for bad quality leave gaps inside a clip; they are filled with NaN, so
          the time axis (t0 + i / fs) stays valid and equals PulseDB's own clip time `T`.
-BP:      one value per beat, calculated from each clip's abp wave (ppg_bp_database.beats), source "calculated".
+BP:      one value per beat, calculated from each clip's abp wave (structure/beats.py), source "calculated".
          Calculated while the .mat file is loaded and buffered in bp_parts/ (deleted at the end), because the
          whole table (tens of millions of beats) does not fit in memory as one DataFrame.
 
@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from mat73 import loadmat
 
-from ppg_bp_database.beats import bp_from_wave
+from ppg_bp_database.structure.beats import bp_from_wave
 from ppg_bp_database.utils import normalize_sex, prepare_out_dir, save_tables, write_wave
 
 DATASET = "pulsedb"
@@ -42,13 +42,13 @@ SIGNALS = {
     "abp": ("ABP_Raw", "mmHg"),
 }
 
-# other fields we read
+# other fields we read (names checked on one MIMIC and one VitalDB file; all inside the struct "Subj_Wins")
 FIELDS = {
     "time": "T",           # (n_segments, 1250), absolute time in s within the clip
-    "age": "Subj_Age",
-    "sex": "Subj_Gender",  # 'M' / 'F'
-    "height": "Subj_Height",
-    "weight": "Subj_Weight",
+    "age": "Age",
+    "sex": "Gender",       # 'M' / 'F'
+    "height": "Height",    # VitalDB only; missing in the MIMIC files
+    "weight": "Weight",    # VitalDB only
 }
 
 
@@ -70,6 +70,11 @@ def _matrix(x) -> np.ndarray:
 def _first(x):
     """Subject-level value, whether stored once or repeated for every segment."""
     return np.asarray(x).reshape(-1)[0]
+
+
+def _optional_float(d: dict, field: str) -> float:
+    """Numeric subject-level field, NaN if the file does not have it (height / weight in the MIMIC part)."""
+    return float(_first(d[field])) if field in d else float("nan")
 
 
 def _split_clips(starts: np.ndarray) -> list[np.ndarray]:
@@ -99,8 +104,8 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
         "dataset": DATASET,
         "age": float(_first(d[FIELDS["age"]])),
         "sex": normalize_sex(pd.Series([str(_first(d[FIELDS["sex"]]))])).iloc[0],
-        "height_cm": float(_first(d[FIELDS["height"]])),  # NaN for MIMIC subjects
-        "weight_kg": float(_first(d[FIELDS["weight"]])),
+        "height_cm": _optional_float(d, FIELDS["height"]),  # NaN for MIMIC subjects
+        "weight_kg": _optional_float(d, FIELDS["weight"]),
     }
 
     records, beats = [], []

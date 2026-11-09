@@ -25,6 +25,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("PPG_BP_DATA_DIR", PROJECT_DIR / "data"))
 RAW_DIR = DATA_DIR / "raw"
 STRUCTURED_DIR = DATA_DIR / "structured"
+HARMONIZED_DIR = DATA_DIR / "harmonized"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Common schema

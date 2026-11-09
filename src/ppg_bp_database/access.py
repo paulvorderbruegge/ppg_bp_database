@@ -6,13 +6,20 @@
     bp = access.load_bp("ppgbp")
     waves = access.load_wave(records.iloc[0])      # {signal name: pd.Series indexed by time in s}
 
+    # harmonized data (scripts/harmonize.py)
+    windows = access.load_windows()                # one row per window
+    bp = access.load_window_bp()                   # BP rows per window (time_s relative to the window start)
+    arrays = access.load_window_waves(windows.iloc[:32])   # {"ppg": (32, n), "abp": (32, n)}
+
 Every table has the columns described in ppg_bp_database.utils (SUBJECT_COLUMNS, RECORD_COLUMNS, BP_COLUMNS).
 """
 from pathlib import Path
 
+import h5py
+import numpy as np
 import pandas as pd
 
-from ppg_bp_database.utils import BP_COLUMNS, STRUCTURED_DIR, read_wave
+from ppg_bp_database.utils import BP_COLUMNS, HARMONIZED_DIR, STRUCTURED_DIR, read_wave
 
 Datasets = str | list[str] | None  # one dataset, several, or None = all available
 
@@ -29,7 +36,7 @@ def _names(datasets: Datasets, structured_dir: Path) -> list[str]:
     missing = [n for n in names if not (structured_dir / n / "records.parquet").is_file()]
     if missing:
         raise FileNotFoundError(f"not converted: {missing}. Available: {available_datasets(structured_dir)}. "
-                                f"Run: uv run python scripts/convert.py {' '.join(missing)}")
+                                f"Run: uv run python scripts/structure.py {' '.join(missing)}")
     return names
 
 
@@ -86,3 +93,58 @@ def summary(structured_dir: Path = STRUCTURED_DIR) -> pd.DataFrame:
             "signals": ", ".join(sorted({s for sig in records["signals"] for s in sig})),
         })
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Harmonized data
+# ---------------------------------------------------------------------------------------------------------------------
+def _harmonized(config: str, harmonized_dir: Path) -> Path:
+    path = harmonized_dir / config
+    if not (path / "windows.parquet").is_file():
+        raise FileNotFoundError(f"no harmonized data for config {config!r} in {harmonized_dir}. "
+                                f"Run: uv run python scripts/harmonize.py --config {config}")
+    return path
+
+
+def _dataset_filter(datasets: Datasets) -> list | None:
+    if datasets is None:
+        return None
+    return [("dataset", "in", [datasets] if isinstance(datasets, str) else list(datasets))]
+
+
+def load_windows(config: str = "default", datasets: Datasets = None,
+                 harmonized_dir: Path = HARMONIZED_DIR) -> pd.DataFrame:
+    """Harmonized windows (one row per window, no BP values)."""
+    return pd.read_parquet(_harmonized(config, harmonized_dir) / "windows.parquet", filters=_dataset_filter(datasets))
+
+
+def load_window_bp(config: str = "default", datasets: Datasets = None,
+                   harmonized_dir: Path = HARMONIZED_DIR) -> pd.DataFrame:
+    """BP rows of the harmonized windows: per beat where possible, else cuff / whole-record value.
+    time_s is relative to the window start (NaN = describes the whole window). Join on window_id."""
+    return pd.read_parquet(_harmonized(config, harmonized_dir) / "bp.parquet", filters=_dataset_filter(datasets))
+
+
+def load_harmonized_subjects(config: str = "default", harmonized_dir: Path = HARMONIZED_DIR) -> pd.DataFrame:
+    """Subjects that have at least one harmonized window."""
+    return pd.read_parquet(_harmonized(config, harmonized_dir) / "subjects.parquet")
+
+
+def load_window_waves(windows: pd.DataFrame, config: str = "default",
+                      harmonized_dir: Path = HARMONIZED_DIR) -> dict[str, np.ndarray]:
+    """{"ppg": (n, samples), "abp": (n, samples)} for the given rows of the windows table, in the same order.
+    PPG is z-scored, ABP in mmHg; NaN after n_samples (short records) and for the whole abp row if has_abp is False."""
+    path = _harmonized(config, harmonized_dir)
+    out: dict[str, np.ndarray] = {}
+    position = np.arange(len(windows))
+    for dataset, rows in windows.reset_index(drop=True).groupby("dataset"):
+        order = np.argsort(rows["row"].to_numpy())
+        h5_rows = rows["row"].to_numpy()[order]
+        target = position[rows.index.to_numpy()][order]
+        with h5py.File(path / "waves" / f"{dataset}.h5", "r") as f:
+            for name in ("ppg", "abp"):
+                data = f[name][h5_rows]  # type: ignore  (h5py needs increasing indices)
+                if name not in out:
+                    out[name] = np.full((len(windows), data.shape[1]), np.nan, dtype=np.float32)
+                out[name][target] = data
+    return out

@@ -3,7 +3,7 @@
 Raw:     data/raw/mimicbp/**/<source_id>_{ppg,abp,labels}.npy (found wherever the zips were unpacked)
 Records: one per 30 s segment (30 per subject), ppg + abp at 125 Hz
 BP:      source "dataset":    median SBP/DBP per segment as provided by the dataset (derived from the abp), time_s NaN
-         source "calculated": one value per beat, calculated from the abp wave (ppg_bp_database.beats);
+         source "calculated": one value per beat, calculated from the abp wave (structure/beats.py);
                               the dataset's medians can be used to validate them
 """
 from pathlib import Path
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ppg_bp_database.beats import bp_from_wave
+from ppg_bp_database.structure.beats import bp_from_wave
 from ppg_bp_database.utils import mean_arterial_pressure, prepare_out_dir, save_tables, write_wave
 
 DATASET = "mimicbp"

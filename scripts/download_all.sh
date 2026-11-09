@@ -21,4 +21,4 @@ if [ ${#failed[@]} -gt 0 ]; then
     echo "FAILED: ${failed[*]} (rerun: scripts/download_all.sh ${failed[*]})"
     exit 1
 fi
-echo "All downloads OK. Next: uv run python scripts/convert.py"
+echo "All downloads OK. Next: uv run python scripts/structure.py"

@@ -1,12 +1,12 @@
-"""Convert raw datasets (data/raw/<dataset>) to the shared format (data/structured/<dataset>).
+"""Step 1, structuring: raw datasets (data/raw/<dataset>) -> shared format (data/structured/<dataset>).
 
-    uv run python scripts/convert.py                 # all datasets whose raw folder is not empty
-    uv run python scripts/convert.py ppgbp pttppg    # only these
+    uv run python scripts/structure.py                 # all datasets whose raw folder is not empty
+    uv run python scripts/structure.py ppgbp pttppg    # only these
 """
 import argparse
 import sys
 
-from ppg_bp_database.datasets import DATASETS
+from ppg_bp_database.structure import DATASETS
 from ppg_bp_database.utils import RAW_DIR, STRUCTURED_DIR
 
 
