@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 import wfdb
 
-from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "pwdb"
 SYNTHETIC = True
@@ -121,7 +121,7 @@ def build_subjects(raw_dir: Path) -> pd.DataFrame:
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Convert every subject's WFDB record (one beat, 52 channels) to one HDF5 file and return the records table."""
     rows = []
-    for number, path in _headers(raw_dir).items():
+    for number, path in progress(_headers(raw_dir).items(), "records converted"):
         rec = wfdb.rdrecord(str(path))
         assert rec.fs == SAMPLE_RATE_HZ, f"{path.name}: {rec.fs} Hz"
 
@@ -147,8 +147,6 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
             "sampling_rates_hz": [SAMPLE_RATE_HZ] * len(signals),
             "wave_path": wave_path,
         })
-        if len(rows) % 500 == 0:
-            print(f"{len(rows)}/{N_SUBJECTS} records converted")
     return pd.DataFrame(rows)
 
 

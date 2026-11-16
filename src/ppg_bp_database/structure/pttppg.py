@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import wfdb
 
-from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "pttppg"
 SYNTHETIC = False  # measured data
@@ -53,7 +53,7 @@ def build_subjects(raw_dir: Path) -> pd.DataFrame:
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Convert every WFDB record (ECG + PPG channels) to one HDF5 file and return the records table."""
     rows = []
-    for row in _read_info(raw_dir).itertuples():
+    for row in progress(_read_info(raw_dir).itertuples(), "records converted"):
         rec = wfdb.rdrecord(str(raw_dir / row.record), channel_names=list(CHANNELS))
         assert rec.sig_name == list(CHANNELS), f"{row.record}: channels {rec.sig_name}"
 

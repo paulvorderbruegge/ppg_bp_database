@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import mean_arterial_pressure, normalize_sex, prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "ppgbp"
 SYNTHETIC = False  # measured data
@@ -59,7 +59,7 @@ def build_subjects(raw_dir: Path) -> pd.DataFrame:
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Convert every 2.1 s segment to one HDF5 file and return the records table."""
     rows = []
-    for txt in sorted((raw_dir / WAVE_DIR).glob("*.txt")):
+    for txt in progress(sorted((raw_dir / WAVE_DIR).glob("*.txt")), "files converted"):
         subject, segment = txt.stem.split("_")                 # "2_1.txt"
         data = np.array(txt.read_text().split(), dtype=float)  # one line, tab-separated, trailing tab
 

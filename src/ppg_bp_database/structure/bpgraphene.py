@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from ppg_bp_database.structure.beats import bp_from_wave
-from ppg_bp_database.utils import prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "bpgraphene"
 SYNTHETIC = False  # measured data
@@ -63,7 +63,7 @@ def _record_id(bp_file: Path) -> str:
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Convert every trial to one HDF5 file and return the records table."""
     rows = []
-    for bp_file in _trial_files(raw_dir):
+    for bp_file in progress(_trial_files(raw_dir), "trials converted"):
         subject, day = _subject_day(bp_file)
         setup = bp_file.parent.name                                   # "setup02_hgcp"
         trial = bp_file.stem.split("_")[1].removeprefix("trial")      # "01"
@@ -95,7 +95,7 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
     """One value per beat of the finapres_bp wave (the dataset gives no single BP values)."""
     _, fs, _ = SIGNALS["finapresBP"]
     parts = []
-    for bp_file in _trial_files(raw_dir):
+    for bp_file in progress(_trial_files(raw_dir), "trials: BP extracted"):
         values, t0 = _read_signal(bp_file, fs)
         parts.append(bp_from_wave(_record_id(bp_file), values.to_numpy(), fs, t0, "finapres"))
     return pd.concat(parts, ignore_index=True)

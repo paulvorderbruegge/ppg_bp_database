@@ -27,7 +27,7 @@ from ppg_bp_database.harmonize.config import HarmonizeConfig
 from ppg_bp_database.harmonize.signals import Rejected, cut, cut_periodic, derivative_skew, peak_count, process_ppg
 from ppg_bp_database.harmonize.sources import Source, sources
 from ppg_bp_database.harmonize.windows import plan_record
-from ppg_bp_database.utils import BP_COLUMNS, HARMONIZED_DIR, STRUCTURED_DIR, _conform
+from ppg_bp_database.utils import BP_COLUMNS, HARMONIZED_DIR, STRUCTURED_DIR, _conform, progress
 
 WINDOW_COLUMNS = {
     "window_id": "string",
@@ -177,7 +177,7 @@ def harmonize_dataset(name: str, config: HarmonizeConfig, out_dir: Path, windows
             buf.clear()
 
     done = set()
-    for record_id, rec_bp in _record_bp(structured_dir / name):
+    for record_id, rec_bp in progress(_record_bp(structured_dir / name), "records harmonized", total=len(records)):
         rec_bp = rec_bp.reset_index(drop=True)
         done.add(record_id)
         rec = records.loc[record_id]
@@ -238,6 +238,8 @@ def harmonize(datasets: list[str] | None = None, config: HarmonizeConfig = Harmo
     """Harmonize the given datasets (default: all converted ones) into harmonized_dir/<config.name>/.
     The folder is rebuilt from scratch and then contains exactly these datasets."""
     names = datasets or access.available_datasets(structured_dir)
+    if not datasets:
+        print(f"Structured datasets: {', '.join(names) or 'none'}")
     unknown = set(names) - set(sources(config))
     assert not unknown, f"no harmonization source defined for {sorted(unknown)} (see harmonize/sources.py)"
     out_dir = harmonized_dir / config.name
@@ -250,6 +252,7 @@ def harmonize(datasets: list[str] | None = None, config: HarmonizeConfig = Harmo
     report_rows, subject_ids = [], set()
     try:
         for name in names:
+            print(f"--- {name}")
             report, subjects = harmonize_dataset(name, config, out_dir, windows_out, bp_out, structured_dir)
             subject_ids |= subjects
             report_rows += [{"dataset": name, "reason": r, "count": c} for r, c in sorted(report.items())]

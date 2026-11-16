@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from ppg_bp_database.structure.beats import bp_from_wave
-from ppg_bp_database.utils import mean_arterial_pressure, prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import mean_arterial_pressure, prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "mimicbp"
 SYNTHETIC = False  # measured data
@@ -49,7 +49,7 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
     files = _find_files(raw_dir)
 
     rows = []
-    for source_id in _source_ids(files):
+    for source_id in progress(_source_ids(files), "files converted"):
         ppg = np.load(files[f"{source_id}_ppg.npy"])
         abp = np.load(files[f"{source_id}_abp.npy"])
         assert ppg.shape == abp.shape == (N_SEGMENTS, SEGMENT_SAMPLES), \
@@ -81,7 +81,7 @@ def build_bp(raw_dir: Path, records: pd.DataFrame) -> pd.DataFrame:
     files = _find_files(raw_dir)
 
     given, beats = [], []
-    for source_id in _source_ids(files):
+    for source_id in progress(_source_ids(files), "files: BP extracted"):
         record_ids = [_record_id(source_id, i + 1) for i in range(N_SEGMENTS)]
         labels = np.load(files[f"{source_id}_labels.npy"])
         assert labels.shape == (N_SEGMENTS, 2), f"{source_id}: labels {labels.shape}, expected (30, 2): SBP, DBP"

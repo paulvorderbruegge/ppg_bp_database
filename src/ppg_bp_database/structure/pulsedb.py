@@ -21,7 +21,7 @@ import pandas as pd
 from mat73 import loadmat
 
 from ppg_bp_database.structure.beats import bp_from_wave
-from ppg_bp_database.utils import normalize_sex, prepare_out_dir, save_tables, write_wave
+from ppg_bp_database.utils import normalize_sex, prepare_out_dir, progress, save_tables, write_wave
 
 DATASET = "pulsedb"
 SYNTHETIC = False  # measured data
@@ -160,13 +160,11 @@ def convert(raw_dir: Path, out_dir: Path) -> None:
     assert files, f"no PulseDB .mat files found below {raw_dir}"
 
     subjects, records = [], []
-    for i, (path, source, condition) in enumerate(files, start=1):
+    for i, (path, source, condition) in enumerate(progress(files, "files converted"), start=1):
         subject, recs, beats = convert_file(path, out_dir, source, condition)
         subjects.append(subject)
         records.extend(recs)
         beats.to_parquet(parts_dir / f"{i:05d}.parquet", index=False)
-        if i % 100 == 0:
-            print(f"{i}/{len(files)} files converted")
 
     bp_chunks = (pd.read_parquet(p) for p in sorted(parts_dir.glob("*.parquet")))
     save_tables(out_dir, pd.DataFrame(subjects), pd.DataFrame(records), bp_chunks, synthetic=SYNTHETIC)

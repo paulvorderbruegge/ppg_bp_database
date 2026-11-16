@@ -9,7 +9,7 @@ Every dataset is written to ``data/structured/<dataset>/``:
 """
 import os
 import shutil
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import h5py
@@ -61,6 +61,19 @@ BP_COLUMNS = {
     "source": "string",       # "dataset" = value given by the dataset, "calculated" = calculated by us from a wave
 }
 BP_SOURCES = {"dataset", "calculated"}
+
+
+def progress[T](items: Iterable[T], what: str, total: int | None = None, steps: int = 10) -> Iterator[T]:
+    """Loop over items, printing "i/n <what>" about `steps` times (after item i is processed). Pass total for a
+    stream that should not be materialized as a list."""
+    if total is None:
+        items = list(items)
+        total = len(items)
+    every = max(1, -(-total // steps))
+    for i, item in enumerate(items, start=1):
+        yield item
+        if i % every == 0 or i == total:
+            print(f"  {i}/{total} {what}", flush=True)
 
 
 def normalize_sex(values: pd.Series) -> pd.Series:
