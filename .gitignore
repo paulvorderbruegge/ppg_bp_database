@@ -9,4 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-data/
+# data folder (or a symlink to it, e.g. on the cluster)
+/data
+
+# Slurm logs
+*.out
+*.err
