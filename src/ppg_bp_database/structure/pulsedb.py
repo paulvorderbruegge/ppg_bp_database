@@ -4,6 +4,12 @@ Raw:     data/raw/pulsedb/**/{PulseDB_MIMIC,PulseDB_Vital}/<subject>.mat (downlo
 Records: one per consecutive clip of one .mat file (NOT one per 10 s segment: that would be ~5 million HDF5 files).
          The 10 s segments that PulseDB removed for bad quality leave gaps inside a clip; they are filled with NaN, so
          the time axis (t0 + i / fs) stays valid and equals PulseDB's own clip time `T`.
+Subjects: MIMIC part "mimic3_<file name>" (e.g. mimic3_p090020, the same subject_id as in mimicbp: same person; see
+         mimic3_clinical, "Subject IDs"), VitalDB part "pulsedb_vital_<file name>". Record IDs always start with
+         "pulsedb_". Age and sex from the .mat file. Height / weight are only in the VitalDB files; for the MIMIC part they come
+         from the MIMIC-III clinical database (structure/mimic3_clinical.py), using the admission of the waveform
+         record given by CaseID (extra columns case_id, mimic3_hadm_id, mimic3_match). Without data/raw/mimic3 they
+         stay NaN.
 BP:      one value per beat, calculated from each clip's abp wave (structure/beats.py), source "calculated".
          Calculated while the .mat file is loaded and buffered in bp_parts/ (deleted at the end), because the
          whole table (tens of millions of beats) does not fit in memory as one DataFrame.
@@ -20,6 +26,7 @@ import numpy as np
 import pandas as pd
 from mat73 import loadmat
 
+from ppg_bp_database.structure import mimic3_clinical
 from ppg_bp_database.structure.beats import bp_from_wave
 from ppg_bp_database.utils import normalize_sex, prepare_out_dir, progress, save_tables, write_wave
 
@@ -49,6 +56,7 @@ FIELDS = {
     "sex": "Gender",       # 'M' / 'F'
     "height": "Height",    # VitalDB only; missing in the MIMIC files
     "weight": "Weight",    # VitalDB only
+    "case_id": "CaseID",   # MIMIC: waveform record start '2179-10-26-00-15' (date-shifted); VitalDB: case 'c1487'
 }
 
 
@@ -65,6 +73,11 @@ def _load(path: Path) -> dict:
 def _matrix(x) -> np.ndarray:
     """(n_segments, 1250) float array, whether the file gave a matrix or a list of rows."""
     return np.asarray(x, dtype=float).reshape(-1, SEGMENT_SAMPLES)
+
+
+def _subject_id(source: str, stem: str) -> str:
+    """MIMIC: 'p090020' -> 'mimic3_p090020' (shared with mimicbp); VitalDB: 'pulsedb_vital_<stem>'."""
+    return mimic3_clinical.subject_id(stem) if source == "mimic" else f"{DATASET}_{source}_{stem}"
 
 
 def _first(x):
@@ -98,7 +111,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
     for name, m in data.items():
         assert m.shape == (n, SEGMENT_SAMPLES), f"{mat_path.name}: {name} has shape {m.shape}"
 
-    subject_id = f"{DATASET}_{source}_{mat_path.stem}"
+    subject_id = _subject_id(source, mat_path.stem)
     subject = {
         "subject_id": subject_id,
         "dataset": DATASET,
@@ -106,6 +119,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
         "sex": normalize_sex(pd.Series([str(_first(d[FIELDS["sex"]]))])).iloc[0],
         "height_cm": _optional_float(d, FIELDS["height"]),  # NaN for MIMIC subjects
         "weight_kg": _optional_float(d, FIELDS["weight"]),
+        "case_id": str(_first(d[FIELDS["case_id"]])) if FIELDS["case_id"] in d else None,
     }
 
     records, beats = [], []
@@ -122,7 +136,7 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
                 full[off:off + SEGMENT_SAMPLES] = row
             signals[name] = (full, SAMPLE_RATE_HZ, unit, t0)
 
-        record_id = f"{subject_id}_c{clip:02d}"
+        record_id = f"{DATASET}_{source}_{mat_path.stem}_c{clip:02d}"
         wave_path = f"waves/{record_id}.h5"
         write_wave(out_dir / wave_path, signals)
         beats.append(bp_from_wave(record_id, signals["abp"][0], SAMPLE_RATE_HZ, t0, "abp"))
@@ -139,6 +153,28 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
         })
 
     return subject, records, pd.concat(beats, ignore_index=True)
+
+
+def add_mimic3_height_weight(subjects: pd.DataFrame) -> pd.DataFrame:
+    """Fill height / weight of the MIMIC subjects from the MIMIC-III clinical database. Age and sex stay as given by
+    PulseDB; mimic3_hadm_id / mimic3_match say which admission was used."""
+    subjects = subjects.astype({"case_id": "string"})
+    mimic = subjects[subjects["subject_id"].str.startswith(mimic3_clinical.SUBJECT_PREFIX)]
+    if mimic.empty:
+        return subjects
+    if not mimic3_clinical.available():
+        print(f"  {mimic3_clinical.missing_message('height / weight of the MIMIC subjects')}")
+        return subjects
+
+    query = pd.DataFrame({"key": mimic["subject_id"], "SUBJECT_ID": mimic3_clinical.subject_number(mimic["subject_id"]),
+                          "time": mimic3_clinical.record_start(mimic["case_id"])})
+    demo = mimic3_clinical.demographics(query)
+    print(f"  MIMIC-III admission match: {demo['mimic3_match'].value_counts().to_dict()}")
+
+    subjects = subjects.join(demo[["mimic3_hadm_id", "mimic3_match"]], on="subject_id")
+    for col in ("height_cm", "weight_kg"):
+        subjects[col] = subjects[col].fillna(subjects["subject_id"].map(demo[col]))
+    return subjects
 
 
 def _mat_files(raw_dir: Path) -> Iterator[tuple[Path, str, str]]:
@@ -167,5 +203,6 @@ def convert(raw_dir: Path, out_dir: Path) -> None:
         beats.to_parquet(parts_dir / f"{i:05d}.parquet", index=False)
 
     bp_chunks = (pd.read_parquet(p) for p in sorted(parts_dir.glob("*.parquet")))
-    save_tables(out_dir, pd.DataFrame(subjects), pd.DataFrame(records), bp_chunks, synthetic=SYNTHETIC)
+    subjects = add_mimic3_height_weight(pd.DataFrame(subjects))
+    save_tables(out_dir, subjects, pd.DataFrame(records), bp_chunks, synthetic=SYNTHETIC)
     shutil.rmtree(parts_dir)

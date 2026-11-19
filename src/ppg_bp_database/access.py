@@ -52,7 +52,9 @@ def _load(table: str, datasets: Datasets, structured_dir: Path) -> pd.DataFrame:
 
 
 def load_subjects(datasets: Datasets = None, structured_dir: Path = STRUCTURED_DIR) -> pd.DataFrame:
-    """Subjects table. Dataset-specific extra columns are NaN for the other datasets."""
+    """Subjects table. Dataset-specific extra columns are NaN for the other datasets.
+    Keyed by (subject_id, dataset): a MIMIC-III patient in mimicbp and pulsedb has the same subject_id
+    ("mimic3_p..."), one row per dataset. Join on ["subject_id", "dataset"], not on subject_id alone."""
     return _load("subjects", datasets, structured_dir)
 
 

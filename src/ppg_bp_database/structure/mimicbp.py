@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ppg_bp_database.structure import mimic3_clinical
 from ppg_bp_database.structure.beats import bp_from_wave
 from ppg_bp_database.utils import mean_arterial_pressure, prepare_out_dir, progress, save_tables, write_wave
 
@@ -37,11 +38,28 @@ def _record_id(source_id: str, segment: int) -> str:
     return f"{DATASET}_{source_id}_{segment:02d}"  # segment 1..30
 
 
+def _subject_id(source_id: str) -> str:
+    """'p093833' -> 'mimic3_p093833': shared with the MIMIC part of PulseDB (same person, same subject_id)."""
+    return mimic3_clinical.subject_id(source_id)
+
+
 def build_subjects(raw_dir: Path) -> pd.DataFrame:
-    """One row per subject (1524).
-    TODO: age, sex, ... from the MIMIC-III clinical database (source id "p093833" = SUBJECT_ID 93833)."""
-    ids = _source_ids(_find_files(raw_dir))
-    return pd.DataFrame({"subject_id": [f"{DATASET}_{i}" for i in ids], "dataset": DATASET})
+    """One row per subject (1524), subject_id "mimic3_<source id>" (see mimic3_clinical, "Subject IDs"). Age, sex, height and weight from the MIMIC-III clinical database
+    (source id "p093833" = SUBJECT_ID 93833; see structure/mimic3_clinical.py). MIMIC-BP does not say which
+    waveform record a subject's segments come from, so all of the subject's records in the Matched Subset are used
+    to find the admission (extra columns mimic3_hadm_id, mimic3_match, age_capped).
+    Without data/raw/mimic3 the demographics stay empty."""
+    ids = pd.Series(_source_ids(_find_files(raw_dir)), dtype="string")
+    subjects = pd.DataFrame({"subject_id": mimic3_clinical.subject_id(ids), "dataset": DATASET})
+    if not mimic3_clinical.available():
+        print(f"  {mimic3_clinical.missing_message()}")
+        return subjects
+
+    query = pd.DataFrame({"key": subjects["subject_id"], "SUBJECT_ID": mimic3_clinical.subject_number(ids)})
+    query = query.merge(mimic3_clinical.record_times(), on="SUBJECT_ID", how="left")  # time NaT if no record
+    demo = mimic3_clinical.demographics(query)
+    print(f"  MIMIC-III admission match: {demo['mimic3_match'].value_counts().to_dict()}")
+    return subjects.join(demo, on="subject_id")
 
 
 def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
@@ -65,7 +83,7 @@ def write_records(raw_dir: Path, out_dir: Path) -> pd.DataFrame:
 
             rows.append({
                 "record_id": record_id,
-                "subject_id": f"{DATASET}_{source_id}",
+                "subject_id": _subject_id(source_id),
                 "dataset": DATASET,
                 "condition": "icu",
                 "duration_s": SEGMENT_SAMPLES / SAMPLE_RATE_HZ,

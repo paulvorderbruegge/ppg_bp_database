@@ -15,6 +15,7 @@ src/ppg_bp_database/
     structure/                 step 1: raw -> data/structured
         <dataset>.py           one converter per dataset, all with the same functions
         beats.py               beat-to-beat SBP / DBP / MAP from a continuous BP wave
+    mimic3_clinical.py     age / sex / height / weight from the MIMIC-III clinical database (for mimicbp, pulsedb)
     harmonize/                 step 2: structured -> data/harmonized (config, sources, windows, signals, pipeline)
     utils.py                   shared schema, paths, save_tables, write_wave / read_wave
     access.py                  loading functions for notebooks (structured and harmonized data)
@@ -23,6 +24,7 @@ scripts/
     harmonize.py               step 2 (data/harmonized/<config>/)
     download_all.sh            runs the download_<dataset>.sh scripts below (all, or the ones given)
     download_<dataset>.sh      download + checksum check + unpack of one dataset into data/raw/<dataset>
+    download_mimic3.sh         MIMIC-III clinical tables for the demographics of mimicbp / pulsedb (credentialed)
     physionet_download.sh      helper for the PhysioNet datasets (pttppg, bpgraphene)
     download_sample.py         a few records of every dataset (~22 MB) to data/raw, for a quick end-to-end test
     inspect_pulsedb.py         prints the structure of one PulseDB .mat file (to check the field names)
@@ -42,6 +44,23 @@ tests/                         uv run pytest (harmonization on synthetic data)
 | `mimicbp`    | Sanches et al. 2024 (Harvard Dataverse)    | no        | 30 s segments, 30 per subject | ppg, abp (125 Hz)          | median per segment (dataset) + per beat, calculated from abp | sample only (`download_sample.py`) |
 | `pulsedb`    | Wang et al. 2023, v2_0                     | no        | one per consecutive clip      | ecg, ppg, abp (125 Hz)     | per beat, calculated from abp | sample only (`download_sample.py`) |
 | `pwdb`       | Charlton et al. 2019, PWDB v0.2.0 (Zenodo 3275625) | **yes** | one simulated beat per virtual subject | abp, ppg, flow_velocity, area at 13 sites each (500 Hz) | brachial SBP/DBP of the simulated wave | sample only (`download_sample.py`) |
+
+### Demographics of the MIMIC-based datasets
+
+MIMIC-BP has no demographics at all, PulseDB has age and sex but height / weight only for its VitalDB part. Both
+come from the MIMIC-III Waveform Database Matched Subset, so the rest is taken from the **MIMIC-III Clinical
+Database v1.4** (credentialed PhysioNet access): `scripts/download_mimic3.sh` -> `data/raw/mimic3`, used automatically
+by `structure.py mimicbp pulsedb` (without it the columns stay empty). Details: `structure/mimic3_clinical.py`.
+
+| dataset | from MIMIC-III | admission used |
+|---|---|---|
+| `mimicbp` | age, sex, height, weight | MIMIC-BP only names the subject: all of the subject's waveform records (`RECORDS-waveforms`) are matched to admissions; several -> earliest, `mimic3_match = "ambiguous"` |
+| `pulsedb` (MIMIC part) | height, weight (age, sex from PulseDB) | the admission containing the record start (`CaseID`) |
+
+Extra subject columns: `mimic3_hadm_id`, `mimic3_match` (`unique` / `ambiguous` / `none`), for mimicbp also
+`age_capped` (MIMIC-III hides ages > 89; they are set to 90), for pulsedb `case_id`. Height = median in the admission
+(else over all admissions), weight = measurement closest to the record start in the admission. The first run
+extracts the height / weight rows of CHARTEVENTS (4 GB) once to `data/structured/mimic3_clinical/height_weight.parquet`.
 
 ## Shared schema
 
@@ -64,7 +83,13 @@ harmonization step. To compare, e.g., MIMIC-BP's own segment medians with ours:
 Every dataset module declares it as `SYNTHETIC` and passes it to `save_tables`. To use only real data:
 `records[~records["synthetic"]]`.
 
-IDs are globally unique (`<dataset>_...`), so tables of different datasets can simply be concatenated.
+IDs are globally unique (`<dataset>_...`), so tables of different datasets can simply be concatenated, with one
+exception: the MIMIC-III patients of mimicbp and pulsedb (MIMIC part) share the subject ID `mimic3_<MIMIC id>`
+(e.g. `mimic3_p093833`), because both datasets come from the same database and partly contain the same people.
+Splits by `subject_id` therefore keep a person on one side across both datasets. Such a person has one subjects row
+per dataset (the values may differ), so the subjects table is keyed by `(subject_id, dataset)`: join it with
+`on=["subject_id", "dataset"]`, never on `subject_id` alone. Record, BP and window IDs stay unique (`mimicbp_...`,
+`pulsedb_...`).
 
 Each HDF5 signal has the attributes `fs` (Hz), `unit` and `t0` (s): sample *i* is at time `t0 + i / fs`.
 Gaps (e.g. removed segments in PulseDB) are NaN.
@@ -140,7 +165,7 @@ per-dataset code:
 
 ## Download
 
-All datasets are open access; no login needed. On a new (Linux) machine:
+All datasets are open access; no login needed (only the optional MIMIC-III demographics need PhysioNet credentials, see below). On a new (Linux) machine:
 
 ```bash
 scripts/download_all.sh                  # everything
@@ -158,7 +183,13 @@ dataset with an error. Rerunning is safe (PhysioNet and MIMIC-BP skip complete f
 | `bpgraphene` | `download_bpgraphene.sh` | PhysioNet `bp-graphene-bioimpedance` 1.0.0 | 2.3 GB (zip size; incl. unused bioimpedance) |
 | `mimicbp`    | `download_mimicbp.sh`    | Harvard Dataverse doi:10.7910/DVN/DBM1NF (v2.2) | 0.5 GB zips + unpacked (`--all` adds ecg, resp: +0.4 GB) |
 | `pwdb`       | `download_pwdb.sh`       | Zenodo 3275625 (v0.2.0)        | 0.4 GB (zip + unpacked)            |
-| `pulsedb`    | `download_pulsedb.sh`    | Box links from the PulseDB GitHub (v2_0) | very large: archives + unpacked need twice the space |
+| `pulsedb`    | `download_pulsedb.sh`    | Box links from the PulseDB GitHub (v2_0) | 388 GB archives (MIMIC 245, VitalDB 143) + 636 GB unpacked (MIMIC 459, VitalDB 177) |
+| `mimic3`     | `download_mimic3.sh`     | PhysioNet `mimiciii` 1.4 (**credentialed**): PATIENTS, ADMISSIONS, D_ITEMS, CHARTEVENTS + open `mimic3wdb-matched` record list | 4.0 GB (stays gzipped) |
+
+`mimic3` is not a dataset but demographics for mimicbp / pulsedb; it is not part of `download_all.sh` without
+arguments because it asks for the PhysioNet password: `PHYSIONET_USER=<username> scripts/download_mimic3.sh`
+(or put `machine physionet.org login <username> password <password>` into `~/.netrc`). Install `aria2` (`sudo dnf
+install aria2`) to download over several connections at once; without it the script falls back to wget, which is much slower.
 
 Archives are kept after unpacking (except PPG-BP); delete them with `rm` once the conversion works.
 The converted data needs space too: e.g. `pwdb` is ~1.1 GB in `data/structured`.
@@ -211,5 +242,5 @@ downloaded records, and the PulseDB files are the smallest ones, each with a sin
 - Harmonization on real mimicbp / pulsedb / bpgraphene / pwdb: run notebooks/02_harmonized_check.ipynb
 - PulseDB also gives its own SBP/DBP per 10 s segment (`SegSBP`, `SegDBP`); could be added as `source = dataset`
 - PulseDB: field names checked only on single-segment files; check how mat73 loads a file with many segments
-- MIMIC-BP demographics from the MIMIC-III clinical database
+- MIMIC-III demographics: run on the real data and check the `mimic3_match` counts and the printed CHARTEVENTS item table
 - PulseDB: check the ECG unit
