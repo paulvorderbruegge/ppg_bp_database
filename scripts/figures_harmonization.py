@@ -156,8 +156,50 @@ def bandpass_example(record_id: str = "pttppg_s12_sit", t_start: float = 312.0) 
     return _plot_rows(rows, f"{record_id} {config.pttppg_ppg} (seated), window from {t_start:.0f} s",
                       "bandpass_example.png")
 
+
+def before_after_example(examples: tuple[tuple[str, str], ...] = (
+        ("pttppg_s15_sit_w0002", "drift, sensor noise, upside down"),
+        ("pttppg_s22_sit_w0004", "upside down"),
+        ("bpgraphene_s3_day1_setup06_trial23_w0000", "baseline wander"),
+        ("mimicbp_p014279_27_w0001", "baseline wander"))) -> Path:
+    """PPG of harmonized windows next to the same 10 s of the stored signal (data/structured, native rate, no
+    processing). Picked from a scan of the test set: windows whose stored PPG has an obvious problem (drift relative
+    to pulse amplitude, high-frequency noise, negative dskew) and whose harmonized PPG is regular (autocorrelation
+    > 0.75 at one beat) with dskew > 1.2."""
+    from ppg_bp_database.access import load_window_waves, load_windows
+    from ppg_bp_database.harmonize.config import HarmonizeConfig
+
+    config = HarmonizeConfig()
+    w = load_windows().set_index("window_id").loc[[e[0] for e in examples]].reset_index()
+    ppg = load_window_waves(w)["ppg"]
+    t_out = np.arange(int(config.window_s * config.fs)) / config.fs
+
+    fig, axes = plt.subplots(len(w), 2, sharex=True, figsize=(11, 1.9 * len(w)))
+    for (a, b), (i, win), (_, problem) in zip(axes, w.iterrows(), examples):
+        records = pd.read_parquet(STRUCTURED_DIR / win["dataset"] / "records.parquet").set_index("record_id")
+        x, fs, t0 = _read_signal(STRUCTURED_DIR / win["dataset"] / records.loc[win["record_id"], "wave_path"],
+                                 win["ppg_signal"])
+        t = t0 + np.arange(len(x)) / fs
+        m = (t >= win["t_start_s"]) & (t < win["t_start_s"] + config.window_s)
+        a.plot(t[m] - win["t_start_s"], x[m], lw=0.7, color="C3")
+        a.set_title(f"{win['dataset']}, stored ({fs:.0f} Hz): {problem}", fontsize=9, loc="left")
+        a.set_ylabel("a.u.")
+        b.plot(t_out, ppg[i], lw=0.8, color="C0")
+        b.set_title(f"{win['dataset']}, harmonized ({config.fs:.0f} Hz)", fontsize=9, loc="left")
+        b.set_ylabel("z-score")
+    for ax in axes[-1]:
+        ax.set_xlabel("time in window (s)")
+        ax.set_xlim(0, config.window_s)
+    fig.suptitle("PPG before (left) and after (right) harmonization, same 10 s windows", fontsize=11)
+    fig.tight_layout()
+    out = FIG_DIR / "before_after_harmonization.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
 if __name__ == "__main__":
     print(dskew_example())
     print(finapres_calibration_example())
     print(channel_shape_example())
     print(bandpass_example())
+    print(before_after_example())
