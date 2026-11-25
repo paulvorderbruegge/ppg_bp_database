@@ -126,7 +126,9 @@ def convert_file(mat_path: Path, out_dir: Path, source: str, condition: str
     for clip, idx in enumerate(_split_clips(starts), start=1):
         t0 = float(starts[idx[0]])
         offsets = np.rint((starts[idx] - t0) * SAMPLE_RATE_HZ).astype(int)
-        assert np.all(np.diff(offsets) >= SEGMENT_SAMPLES), "overlapping segments"
+        # A step of 1249 samples occurs (rounding of the start times in T; seen in p060274 MIMIC and p001942 Vital,
+        # the shared sample has the same value in both segments): the later segment overwrites it. More is an error.
+        assert np.all(np.diff(offsets) >= SEGMENT_SAMPLES - 1), f"{mat_path.name}: overlapping segments"
         total = int(offsets[-1]) + SEGMENT_SAMPLES
 
         signals = {}

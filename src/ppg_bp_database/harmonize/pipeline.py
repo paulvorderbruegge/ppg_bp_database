@@ -26,6 +26,7 @@ from ppg_bp_database import access
 from ppg_bp_database.harmonize.config import HarmonizeConfig
 from ppg_bp_database.harmonize.signals import Rejected, cut, cut_periodic, derivative_skew, peak_count, process_ppg
 from ppg_bp_database.harmonize.sources import Source, sources
+from ppg_bp_database.harmonize.segments import usable_segments
 from ppg_bp_database.harmonize.windows import plan_record
 from ppg_bp_database.utils import BP_COLUMNS, HARMONIZED_DIR, STRUCTURED_DIR, _conform, progress
 
@@ -123,14 +124,6 @@ def _read_signal(path: Path, name: str) -> tuple[np.ndarray, float, float]:
         return ds[:].astype(float), float(ds.attrs["fs"]), float(ds.attrs["t0"])  # type: ignore
 
 
-def _span(x: np.ndarray, fs: float, t0: float) -> tuple[float, float]:
-    """Time span from the first to the last finite sample."""
-    finite = np.flatnonzero(np.isfinite(x))
-    if not len(finite):
-        return np.inf, -np.inf
-    return t0 + finite[0] / fs, t0 + (finite[-1] + 1) / fs
-
-
 def _window(signals: dict, src: Source, start: float, n: int, config: HarmonizeConfig
             ) -> tuple[np.ndarray, np.ndarray | None, float]:
     """(z-scored PPG, ABP in mmHg or None, true start time) of one window. Raises Rejected."""
@@ -138,20 +131,18 @@ def _window(signals: dict, src: Source, start: float, n: int, config: HarmonizeC
     x, fs_in, t0 = signals["ppg"]
     if src.periodic:
         y, c = cut_periodic(x, fs_in, fs, n)
-        raw, t_start = x[np.isfinite(x)], t0
+        t_start = t0
     else:
-        y, c, t_start = cut(x, fs_in, t0, start, n, fs, config.pad_s, "ppg")
-        i0 = int(np.ceil((start - t0) * fs_in - 1e-6))
-        raw = x[i0:i0 + int(np.ceil(n * fs_in / fs - 1e-6))]
-    ppg = process_ppg(y, c, n, raw, fs, config.ppg_band_hz, src.ppg_inverted, config.min_ppg_std,
-                      config.max_clip_fraction)
+        y, c, t_start = cut(x, fs_in, t0, start, n, fs, config.pad_s)
+    ppg = process_ppg(y, c, n, fs, config.ppg_band_hz)
 
     abp = None
     if "abp" in signals:
         x, fs_in, t0 = signals["abp"]
-        y, c = cut_periodic(x, fs_in, fs, n) if src.periodic else cut(x, fs_in, t0, start, n, fs, config.pad_s, "abp")[:2]
+        y, c = cut_periodic(x, fs_in, fs, n) if src.periodic else cut(x, fs_in, t0, start, n, fs, config.pad_s)[:2]
         abp = y[c:c + n]
-        diff = abs(peak_count(ppg, fs, config.peak_prominence_ratio) - peak_count(abp, fs, config.peak_prominence_ratio))
+        counts = [peak_count(s, fs, config.peak_prominence_ratio, config.min_beats_per_s) for s in (ppg, abp)]
+        diff = abs(counts[0] - counts[1])
         if diff > config.max_beat_count_diff:
             raise Rejected("hr_mismatch")
     return ppg, abp, t_start
@@ -186,13 +177,15 @@ def harmonize_dataset(name: str, config: HarmonizeConfig, out_dir: Path, windows
         assert not missing, f"{record_id}: signals {sorted(missing)} not found, has {list(rec['signals'])}"
         path = structured_dir / name / rec["wave_path"]
         signals = {key: _read_signal(path, sig) for key, sig in wanted.items()}
+        if src.ppg_inverted:  # orientation: flip once for the whole record (linear, so the order of steps is irrelevant)
+            x, fs_in, t0 = signals["ppg"]
+            signals["ppg"] = (-x, fs_in, t0)
 
-        spans = [_span(*s) for s in signals.values()]
-        t_begin, t_end = max(s[0] for s in spans), min(s[1] for s in spans)
-        if t_end <= t_begin:
+        segments = usable_segments(signals, {"abp"} if src.abp_flat_check else set(), config)
+        if not segments:
             report["no_signal"] += 1
             continue
-        plan = plan_record(t_begin, t_end, rec_bp, config)
+        plan = plan_record(segments, rec_bp, config)
         report.update(plan.rejected)
         n = n_full if plan.full_length else int(np.floor(plan.duration_s * config.fs + 1e-6))
 

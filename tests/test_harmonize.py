@@ -67,12 +67,14 @@ def harmonized(tmp_path_factory):
                              "signals": {"ppg": (p, 125.0, "a.u.", 100.0), "abp": (x, 125.0, "mmHg", 100.0)}}],
           bp_from_wave("pulsedb_c01", x, 125.0, 100.0, "abp"))
 
-    # bpgraphene-like: finapres 200 Hz, ppg 1250 Hz (same underlying pulse), t0 = 3.5 s
+    # bpgraphene-like: finapres 200 Hz, ppg 1250 Hz (same underlying pulse), t0 = 3.5 s;
+    # Finapres calibration (flat pressure) at 20-22 s on the record's time axis
     x, truth["bpgraphene_t1"] = abp(200.0, 40, rng)
     truth["bpgraphene_t1"][:, 0] += 3.5
     t200 = np.arange(len(x)) / 200
     t1250 = np.arange(int(40 * 1250)) / 1250
     p = ppg_from_abp(np.interp(t1250, t200, x), 1250.0, rng)
+    x[int((20 - 3.5) * 200):int((22 - 3.5) * 200)] = 95.0
     _save(root, "bpgraphene", [{"record_id": "bpgraphene_t1", "subject_id": "bpgraphene_s1",
                                 "signals": {"ppg": (p, 1250.0, "a.u.", 3.5), "finapres_bp": (x, 200.0, "mmHg", 3.5)}}],
           bp_from_wave("bpgraphene_t1", x, 200.0, 3.5, "finapres"))
@@ -81,7 +83,7 @@ def harmonized(tmp_path_factory):
     x, _ = abp(500.0, 200, rng)
     p = -ppg_from_abp(x, 500.0, rng)
     _save(root, "pttppg", [{"record_id": "pttppg_s1_sit", "subject_id": "pttppg_s1",
-                            "signals": {"ppg_1": (p, 500.0, "a.u.", 0.0), "ppg_2": (rng.normal(size=len(p)), 500.0, "a.u.", 0.0)}}],
+                            "signals": {"ppg_2": (p, 500.0, "a.u.", 0.0), "ppg_3": (rng.normal(size=len(p)), 500.0, "a.u.", 0.0)}}],
           _given("pttppg_s1_sit", [0.0, 199.0], [118.0, 125.0], [76.0, 79.0], "cuff"))
 
     # ppgbp-like: 2.1 s at 1000 Hz, cuff at t = 0
@@ -147,12 +149,18 @@ def test_beats_match_truth_and_wave(harmonized):
             assert np.abs(arrays["abp"][i, idx] - rows["dbp"].to_numpy()[: len(idx)]).max() < 4  # resampled onset
 
 
-def test_gap_rejected_and_reported(harmonized):
+def test_no_window_in_gap(harmonized):
     w = _windows(harmonized, "pulsedb")
     assert w["t_start_s"].round(3).tolist() == [100.0, 110.0, 130.0, 140.0, 150.0]   # 120-130 s is the gap
     report = pd.read_csv(harmonized["dir"] / "report.csv")
     rejected = report[(report["dataset"] == "pulsedb") & (report["reason"] != "kept")]["count"].sum()
-    assert rejected == 1
+    assert rejected == 0   # windows are only placed between gaps, not placed and then rejected
+
+
+def test_no_window_at_calibration(harmonized):
+    """Flat Finapres stretch at 20-22 s, excluded with 1 s margin: segments 3.5-19 and 23-43.5 s."""
+    w = _windows(harmonized, "bpgraphene")
+    assert w["t_start_s"].round(3).tolist() == [3.5, 23.0, 33.0]
 
 
 def test_noise_ppg_rejected(harmonized):
@@ -170,7 +178,7 @@ def test_cuff_windows_near_readings(harmonized):
     assert len(w) == 6 + 6          # 0..50 and 139..189 (record ends at 200)
     bp = harmonized["bp"].merge(w[["window_id", "t_start_s"]], on="window_id")
     assert (bp.loc[bp["t_start_s"] < 100, "sbp"] == 118).all() and (bp.loc[bp["t_start_s"] >= 100, "sbp"] == 125).all()
-    assert (w["ppg_signal"] == "ppg_1").all()
+    assert (w["ppg_signal"] == "ppg_2").all()
     assert (w["ppg_dskew"] > 0).mean() > 0.9   # inverted PPG was flipped
     assert not w["has_abp"].any()
 
@@ -201,3 +209,16 @@ def test_outputs(harmonized):
     assert set(subjects["subject_id"]) == set(harmonized["windows"]["subject_id"])
     assert harmonized["windows"]["window_id"].is_unique
     assert set(harmonized["bp"]["window_id"]) <= set(harmonized["windows"]["window_id"])
+
+
+def test_peak_count_slow_heart_rate():
+    """36 bpm pressure wave with a dicrotic wave and small wiggles: > 4 candidate peaks per beat, so the 75th
+    percentile over all candidates (the former reference) lands on a dicrotic wave and 12 peaks were counted.
+    The k-th largest peak (k = 5 at 0.5 beats/s) is systolic, so only the 6 beats are counted."""
+    from ppg_bp_database.harmonize.signals import peak_count
+    t = np.arange(int(10 * FS)) / FS
+    phase = (t * 0.6) % 1                                     # 36 bpm
+    x = (80 + 40 * np.exp(-((phase - 0.10) / 0.04) ** 2)     # systolic peak
+         + 6 * np.exp(-((phase - 0.40) / 0.04) ** 2)          # dicrotic wave
+         + 0.3 * np.sin(2 * np.pi * 3.9 * t))                 # small wiggles
+    assert peak_count(x, FS, CONFIG.peak_prominence_ratio, CONFIG.min_beats_per_s) == 6

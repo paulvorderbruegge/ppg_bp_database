@@ -19,6 +19,7 @@ src/ppg_bp_database/
     harmonize/                 step 2: structured -> data/harmonized (config, sources, windows, signals, pipeline)
     utils.py                   shared schema, paths, save_tables, write_wave / read_wave
     access.py                  loading functions for notebooks (structured and harmonized data)
+    view.py                    notebook helpers for the harmonized data: load_table / show, plot_window
 scripts/
     structure.py               step 1, for one, several or all datasets
     harmonize.py               step 2 (data/harmonized/<config>/)
@@ -27,10 +28,10 @@ scripts/
     download_mimic3.sh         MIMIC-III clinical tables for the demographics of mimicbp / pulsedb (credentialed)
     physionet_download.sh      helper for the PhysioNet datasets (pttppg, bpgraphene)
     download_sample.py         a few records of every dataset (~22 MB) to data/raw, for a quick end-to-end test
+    download_testset.py        laptop-sized test set (~9 GB) representative of the full datasets
     inspect_pulsedb.py         prints the structure of one PulseDB .mat file (to check the field names)
     resampling_error.py        round-trip error native -> harmonized rate -> native, per dataset
-notebooks/                     analyses; 01_example_access.ipynb shows the loading functions,
-                               02_harmonized_check.ipynb checks the harmonized data
+notebooks/                     harmonized_viewer.ipynb: tables and window waves of the harmonized data
 tests/                         uv run pytest (harmonization on synthetic data)
 ```
 
@@ -129,25 +130,29 @@ interpolate them. All other datasets are downsampled (`resample_poly`, anti-alia
 `scripts/resampling_error.py` shows what the downsampling loses (round trip native -> 125 Hz -> native).
 
 **Per window:**
-- **PPG:** cut with 1 s padding, polarity corrected, resampled, band-passed at 0.5-15 Hz (zero-phase), cropped,
+- **PPG:** polarity corrected (whole record, right after reading), cut with 2 s padding, resampled, band-passed at 0.5-15 Hz (zero-phase, 1 s even extension at the ends), cropped,
   z-scored.
 - **ABP:** only resampled, so it stays in mmHg.
 
 **Signals:** `harmonize/sources.py`.
 - ppgbp `ppg`
-- pttppg `ppg_1` (configurable). It is inverted in the raw data and flipped here.
+- pttppg `ppg_2` (configurable; clean pulse with the classic shape, see harmonization_description.md step 1). It is inverted in the raw data and flipped here.
 - bpgraphene `ppg` + `finapres_bp`
 - mimicbp / pulsedb `ppg` + `abp`
 - pwdb `ppg_digital` + `abp_brachial`
 
+**Usable segments.** Windows are only placed where all used signals are valid: not in NaN gaps (e.g. between PulseDB's
+segments) and, for the Finapres (bpgraphene), not at its calibrations (pressure within 2 mmHg for >= 0.5 s, plus 1 s
+on both sides; `harmonize/segments.py`).
+
 **Windows and BP rows.** These are derived from the kind of values in the structured bp table, with no
 per-dataset code:
-- **Calculated beats** (mimicbp, pulsedb, bpgraphene): windows tile the record. The BP rows are the valid beats
+- **Calculated beats** (mimicbp, pulsedb, bpgraphene): windows tile each usable segment. The BP rows are the valid beats
   whose onset lies in the window; `time_s` is relative to the window start. MIMIC-BP's own 30 s medians are not
   copied, because they don't describe a 10 s window; use them from `data/structured` for validation.
 - **Timed readings** (pttppg cuff at start and end): only windows within `cuff_window_s` (60 s) of a reading.
   The BP row is the nearest reading, at its time relative to the window (it can lie outside the window).
-- **Whole-record values** (pwdb; `time_s` NaN): windows tile the record, each with that value.
+- **Whole-record values** (pwdb; `time_s` NaN): windows tile each usable segment, each with that value.
 - **Records shorter than one window** (ppgbp 2.1 s, pwdb one beat) keep their own length: `full_length = False`,
   `n_samples` < window, and the arrays are NaN-padded. pwdb's periodic beat is tiled 3x for filtering only.
 
@@ -155,10 +160,8 @@ per-dataset code:
 - Beats outside SBP 60-250 / DBP 30-150 / pulse pressure >= 10 mmHg are dropped.
 - Windows are rejected for:
   - fewer than 0.5 valid beats/s
-  - SBP IQR > 15 mmHg
   - NaN (gaps)
   - flat PPG
-  - > 5 % clipped PPG samples
   - PPG and ABP peak counts differing by more than 2
 - `windows.ppg_dskew` (skewness of the PPG derivative) is > 0 for a correctly oriented pulse. Use it to check
   polarity per dataset.
@@ -181,7 +184,7 @@ dataset with an error. Rerunning is safe (PhysioNet and MIMIC-BP skip complete f
 | `ppgbp`      | `download_ppgbp.sh`      | figshare 10.6084/m9.figshare.5459299.v5 | 10 MB                     |
 | `pttppg`     | `download_pttppg.sh`     | PhysioNet `pulse-transit-time-ppg` 1.1.0 | 2.9 GB                   |
 | `bpgraphene` | `download_bpgraphene.sh` | PhysioNet `bp-graphene-bioimpedance` 1.0.0 | 2.3 GB (zip size; incl. unused bioimpedance) |
-| `mimicbp`    | `download_mimicbp.sh`    | Harvard Dataverse doi:10.7910/DVN/DBM1NF (v2.2) | 0.5 GB zips + unpacked (`--all` adds ecg, resp: +0.4 GB) |
+| `mimicbp`    | `download_mimicbp.sh`    | Harvard Dataverse doi:10.7910/DVN/DBM1NF (v2.2) | 0.5 GB zips + 2.6 GB unpacked (`--all` adds ecg, resp) |
 | `pwdb`       | `download_pwdb.sh`       | Zenodo 3275625 (v0.2.0)        | 0.4 GB (zip + unpacked)            |
 | `pulsedb`    | `download_pulsedb.sh`    | Box links from the PulseDB GitHub (v2_0) | 388 GB archives (MIMIC 245, VitalDB 143) + 636 GB unpacked (MIMIC 459, VitalDB 177) |
 | `mimic3`     | `download_mimic3.sh`     | PhysioNet `mimiciii` 1.4 (**credentialed**): PATIENTS, ADMISSIONS, D_ITEMS, CHARTEVENTS + open `mimic3wdb-matched` record list | 4.0 GB (stays gzipped) |
@@ -229,6 +232,20 @@ uv run python scripts/harmonize.py
 The sample is only for checking that the code runs, not for analysis. pttppg's `subjects_info.csv` is trimmed to the
 downloaded records, and the PulseDB files are the smallest ones, each with a single 10 s segment.
 
+## Test set (~9 GB)
+
+`scripts/download_testset.py` downloads data that is representative of the full datasets but fits on a laptop
+(details in the script's docstring):
+
+- ppgbp, pwdb, mimicbp: complete
+- pttppg, bpgraphene: complete except files the converters never read (pttppg's CSV copies, bpgraphene's
+  bioimpedance)
+- pulsedb: a random sample of whole subject files, stratified by recording length (size quintiles, same number of
+  subjects per quintile; `--seed`, default 0; `--pulsedb-gb`, default 5), split between
+  MIMIC and VitalDB in proportion to their full size. The chosen files are listed in `data/raw/pulsedb/subjects.json`.
+
+Each folder gets a `TESTSET` file describing what it holds. Folders with a full download are never touched.
+
 ## Checking a download
 
 - All `download_*.sh` scripts check the published checksums themselves (SHA-256 for PhysioNet, MD5 for figshare,
@@ -239,7 +256,7 @@ downloaded records, and the PulseDB files are the smallest ones, each with a sin
 ## TODO
 
 - Validate the beat detection on real data (compare with the MIMIC-BP labels; look at Finapres calibration periods)
-- Harmonization on real mimicbp / pulsedb / bpgraphene / pwdb: run notebooks/02_harmonized_check.ipynb
+- Harmonization on real mimicbp / pulsedb / bpgraphene / pwdb: check report.csv, PPG polarity (`ppg_dskew`) and example windows
 - PulseDB also gives its own SBP/DBP per 10 s segment (`SegSBP`, `SegDBP`); could be added as `source = dataset`
 - PulseDB: field names checked only on single-segment files; check how mat73 loads a file with many segments
 - MIMIC-III demographics: run on the real data and check the `mimic3_match` counts and the printed CHARTEVENTS item table
